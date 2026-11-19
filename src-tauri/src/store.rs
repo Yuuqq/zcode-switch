@@ -213,6 +213,7 @@ pub struct ImportReport {
     pub added: Vec<String>,
     pub skipped: Vec<String>,
     pub errors: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 pub fn now_ts() -> String {
@@ -1387,93 +1388,7 @@ fn adopt_virtual_arms_uid(paths: &Paths, acc: &mut Account) -> Result<(), String
     save_account(paths, acc)
 }
 
-pub fn export_bundle_value(accounts: &[Account]) -> Value {
-    json!({
-        "format": "zcode-accounts-bundle",
-        "version": 2,
-        "exportedAt": now_ts(),
-        "accounts": accounts.iter().map(|a| json!({
-            "name": a.name,
-            "createdAt": a.created_at,
-            "credentials": a.credentials,
-            "config": a.config,
-        })).collect::<Vec<_>>(),
-    })
-}
-
-type ImportCandidate = (Option<String>, Value, Option<Value>);
-
-fn import_candidates(v: &Value) -> Result<Vec<ImportCandidate>, String> {
-    if v.get("format").and_then(|f| f.as_str()) == Some("zcode-accounts-bundle") {
-        let arr = v
-            .get("accounts")
-            .and_then(|a| a.as_array())
-            .ok_or(tr("err.bundle.no_accounts"))?;
-        let mut out = vec![];
-        for item in arr {
-            let creds = item.get("credentials").cloned().ok_or(tr("err.bundle.no_creds"))?;
-            out.push((
-                item.get("name").and_then(|n| n.as_str()).map(String::from),
-                creds,
-                item.get("config").cloned(),
-            ));
-        }
-        return Ok(out);
-    }
-    Err(tr("err.bundle.unrecognized"))
-}
-
-pub fn import_values(paths: &Paths, files: &[(String, Value)]) -> Result<ImportReport, String> {
-    let mut report = ImportReport { picked: true, ..Default::default() };
-    let accounts = list_accounts(paths)?;
-
-    let mut new_accounts: Vec<Account> = vec![];
-
-    for (fname, v) in files {
-        let cands = match import_candidates(v) {
-            Ok(c) => c,
-            Err(e) => {
-                report.errors.push(trf("err.import.wrap", &[("fname", fname.as_str()), ("e", e.as_str())]));
-                continue;
-            }
-        };
-        for (name_opt, creds, config_opt) in cands {
-            if !is_logged_in(&creds) {
-                report.skipped.push(trf("err.import.no_creds", &[("fname", fname.as_str())]));
-                continue;
-            }
-            let hash = canonical_hash(&creds);
-            if accounts.iter().any(|a| a.hash == hash) || new_accounts.iter().any(|a| a.hash == hash) {
-                report.skipped.push(trf("err.import.dup", &[("fname", fname.as_str())]));
-                continue;
-            }
-            let base_name = name_opt.unwrap_or_else(|| {
-                let id = zcrypto::account_identity(&creds, &paths.home);
-                id.label().unwrap_or_else(|| format!("Import {}", Local::now().format("%m-%d %H%M")))
-            });
-            let name = unique_name(&accounts, &base_name);
-            let ts = now_ts();
-            let acc = Account {
-                id: Uuid::new_v4().to_string(),
-                name: name.clone(),
-                created_at: ts.clone(),
-                updated_at: ts,
-                hash,
-                credentials: creds,
-                config: config_opt,
-                virtual_device_mid: None,
-                virtual_arms_uid: None,
-            };
-            new_accounts.push(acc);
-            report.added.push(name);
-        }
-    }
-
-    for acc in &new_accounts {
-        save_account(paths, acc)?;
-    }
-    Ok(report)
-}
+pub use crate::transfer::{export_bundle_value, import_values};
 
 pub fn get_state(paths: &Paths) -> Result<AppState, String> {
     let accounts = list_accounts(paths)?;

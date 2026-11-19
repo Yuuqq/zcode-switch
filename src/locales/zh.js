@@ -24,6 +24,7 @@ export const zh = {
   "pw.encryptExport": "加密导出",
   "pw.decryptImport": "解密导入",
   "pw.errMinLen": "密码至少 6 位",
+  "pw.errEmpty": "密码不能为空",
   "pw.errMismatch": "两次输入不一致",
   "pw.errWrong": "密码错误，请重试",
   "pw.exportedToast": "已加密导出到 {path}",

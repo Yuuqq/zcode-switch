@@ -23,7 +23,19 @@ A Tauri 2 desktop tool for one-click switching between multiple ZCode accounts, 
 - **No account loss**: the current login is auto-preserved before switching if not yet saved; file writes go through a temp file + atomic rename
 - **Path traversal protection**: account id whitelist (`[A-Za-z0-9-]`); delete/read cannot escape the account store directory
 - **Encrypted export**: PBKDF2-HMAC-SHA256 (100k iterations) + AES-256-GCM, random salt/nonce; wrong password simply fails, no plaintext traces
-- **Credentials decrypted locally only**: decryption is used solely to display username/email; export files are password-encrypted
+- **Credentials decrypted locally only**: decryption is used for account operations and portable export; export files are password-encrypted
+
+## Import / export
+
+Export one account from its menu, or export all / import `.zsb` files in Settings. CLI equivalents are listed below.
+
+- GUI and CLI exports require a nonblank password of at least **6 characters**; imports accept any nonblank password, including old short passwords.
+- The encrypted envelope remains version 1 (PBKDF2-HMAC-SHA256, 100,000 iterations; AES-256-GCM). The new version 3 payload decrypts source-local `enc:v1:` values **in memory only**, inside the password-encrypted bundle. Import restores those fields using the destination's local ZCode encryption key. Plain fields remain plain. Export fails if a local encrypted field cannot be decrypted.
+- Account names, `createdAt`, credentials and config are retained. IDs and device identities are regenerated when needed; settings, projects and sessions are not exported. Name collisions receive suffixes, including collisions within the same batch. Duplicate credentials are skipped.
+- Version 2 payloads remain readable. Legacy inner ciphertext is decrypted with the local key where possible; otherwise it is retained unchanged with a warning and may not work on this machine. Re-export on the source machine for portability. Older app versions cannot import version 3 payloads.
+- Unknown versions or unsupported encryption metadata are rejected. All selected files are validated before writing. Imports stage account files and roll back newly written files on failure; skipped duplicates do not prevent importing the rest. This is an application-level transaction, not crash/power-loss recovery.
+
+Keep your export password safe: possession of both the file and password grants access to the exported credentials.
 
 ## Promotion claim behavior
 

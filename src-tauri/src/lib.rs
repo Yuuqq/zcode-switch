@@ -9,6 +9,7 @@ mod oauth;
 mod probe;
 mod quota;
 mod store;
+mod transfer;
 mod zcrypto;
 
 use serde_json::{json, Value};
@@ -1002,7 +1003,7 @@ async fn export_pick_path(app: AppHandle, id: String) -> Result<serde_json::Valu
 #[tauri::command]
 async fn export_finalize(path: String, id: String, password: String) -> Result<serde_json::Value, String> {
     let acc = load_account(&Paths::detect(), &id)?;
-    let payload = store::export_bundle_value(std::slice::from_ref(&acc));
+    let payload = store::export_bundle_value(&Paths::detect(), std::slice::from_ref(&acc))?;
     let sealed = cipher::seal(&payload, &password, cipher::FORMAT_BUNDLE)?;
     let body = serde_json::to_string_pretty(&sealed).unwrap() + "\n";
     store::atomic_write(std::path::Path::new(&path), &body).map_err(|e| i18n::trf("err.write", &[("e", &e.to_string())]))?;
@@ -1034,7 +1035,7 @@ async fn export_all_finalize(path: String, password: String) -> Result<serde_jso
     if accounts.is_empty() {
         return Err(i18n::tr("err.export.empty_short"));
     }
-    let payload = store::export_bundle_value(&accounts);
+    let payload = store::export_bundle_value(&Paths::detect(), &accounts)?;
     let sealed = cipher::seal(&payload, &password, cipher::FORMAT_BUNDLE)?;
     let body = serde_json::to_string_pretty(&sealed).unwrap() + "\n";
     store::atomic_write(std::path::Path::new(&path), &body).map_err(|e| i18n::trf("err.write", &[("e", &e.to_string())]))?;
@@ -1096,7 +1097,7 @@ async fn import_sealed(app: AppHandle, files: Vec<(String, Value)>, password: St
             Err(e) => errors.push(i18n::trf("err.import.wrap", &[("fname", fname.as_str()), ("e", &e)])),
         }
     }
-    let mut report = if decrypted.is_empty() {
+    let mut report = if decrypted.is_empty() || !errors.is_empty() {
         ImportReport::default()
     } else {
         import_values(&Paths::detect(), &decrypted)?
