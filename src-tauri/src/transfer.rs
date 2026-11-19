@@ -278,8 +278,20 @@ fn commit_accounts(
         for account in accounts {
             let filename = format!("{}.json", account.id);
             let destination = paths.accounts_dir().join(&filename);
-            publish(&stage.join(filename), &destination)?;
-            published.push(destination);
+            let source = stage.join(filename);
+            match publish(&source, &destination) {
+                Ok(()) => published.push(destination),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(e),
+                Err(_) => {
+                    let mut output = fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&destination)?;
+                    published.push(destination);
+                    let mut input = fs::File::open(source)?;
+                    std::io::copy(&mut input, &mut output)?;
+                }
+            }
         }
         fs::remove_dir_all(&stage)
     })();
@@ -556,7 +568,10 @@ mod tests {
             |from, to| {
                 calls += 1;
                 if calls == 2 {
-                    Err(std::io::Error::other("injected publication failure"))
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        "injected publication failure",
+                    ))
                 } else {
                     fs::hard_link(from, to)
                 }
@@ -600,5 +615,74 @@ mod tests {
             fs::read(store.0.accounts_dir().join(format!("{}.json", existing.id))).unwrap(),
             original
         );
+    }
+
+    #[test]
+    fn hard_link_errors_fall_back_to_copy() {
+        for kind in [
+            std::io::ErrorKind::Unsupported,
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::Other,
+        ] {
+            let store = TestStore::new();
+            let accounts = [account("First", "one"), account("Second", "two")];
+            let mut calls = 0;
+            commit_accounts(&store.0, &accounts, |_, _| {
+                calls += 1;
+                Err(std::io::Error::new(kind, "injected hard link failure"))
+            })
+            .unwrap();
+            assert_eq!(calls, 2);
+            assert_eq!(fs::read_dir(store.0.accounts_dir()).unwrap().count(), 2);
+            for account in &accounts {
+                assert_eq!(
+                    fs::read(store.0.accounts_dir().join(format!("{}.json", account.id))).unwrap(),
+                    serde_json::to_vec_pretty(account).unwrap()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fallback_copy_failure_removes_new_destination_and_previous_accounts() {
+        let store = TestStore::new();
+        let mut calls = 0;
+        let result = commit_accounts(
+            &store.0,
+            &[account("First", "one"), account("Second", "two")],
+            |source, _| {
+                calls += 1;
+                if calls == 2 {
+                    fs::remove_file(source)?;
+                }
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "injected hard link failure",
+                ))
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, 2);
+        assert_eq!(fs::read_dir(store.0.accounts_dir()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn fallback_copy_collision_preserves_existing_account_and_rolls_back() {
+        let store = TestStore::new();
+        let existing = account("Existing", "existing-token");
+        save_account(&store.0, &existing).unwrap();
+        let path = store.0.accounts_dir().join(format!("{}.json", existing.id));
+        let original = fs::read(&path).unwrap();
+        let mut collision = existing;
+        collision.name = "Replacement".into();
+        let result = commit_accounts(&store.0, &[account("New", "new"), collision], |_, _| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "no hard links",
+            ))
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read_dir(store.0.accounts_dir()).unwrap().count(), 1);
+        assert_eq!(fs::read(path).unwrap(), original);
     }
 }
