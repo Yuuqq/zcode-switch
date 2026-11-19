@@ -14,7 +14,7 @@ cpSync(fileURLToPath(new URL("fixtures", import.meta.url)), join(home, ".zcode-s
 const authPath = join(root, "plugin-auth.json");
 const pending = new Map();
 let sequence = 0, stderr = "";
-const child = spawn(process.env.BUN || "bun", [resolve(host)], {
+const child = spawn(process.env.BUN || "bun", ["--preload", fileURLToPath(new URL("host-network.mjs", import.meta.url)), resolve(host)], {
   env: { ...process.env, ZCODE_SWITCH_HOME: home, ZCODE_CREDENTIAL_SECRET: "fixture-secret" },
   stdio: ["pipe", "pipe", "pipe"],
 });
@@ -65,7 +65,22 @@ try {
     assert.equal(loaded.baseURL, base);
     assert.equal(loaded.fetch, true);
   }
-  console.log("Magpie Bun host smoke: PASS (load, prompts, multi-account sign-in, deduplication, reference-only storage, three credential routes)");
+  const catalog = await rpc("providers");
+  const provider = catalog.find((row) => row.id === "zcode-switch");
+  assert.equal(provider.fellBack, false);
+  const image = provider.models.find((m) => m.id === "GLM-Test");
+  assert.equal(image.reasoning, true);
+  assert.equal(image.image, true);
+  assert.equal(image.imageSaid, true);
+  assert.deepEqual(image.inputs, ["text", "image"]);
+  assert.deepEqual(image.outputs, ["text"]);
+  const base = provider.models.find((m) => m.id === "Base-Only");
+  assert.equal(base.reasoning, true);
+  assert.equal(base.image, false);
+  assert.equal(base.imageSaid, true);
+  assert.ok(provider.models.some((m) => m.id === "CN-Model"));
+  assert.ok(provider.models.some((m) => m.id === "Session-Model"));
+  console.log("Magpie Bun host smoke: PASS (load, prompts, multi-account sign-in, deduplication, reference-only storage, three credential routes, serialized catalog reasoning/image flags)");
 } finally {
   child.kill(); lines.close();
   rmSync(root, { recursive: true, force: true });

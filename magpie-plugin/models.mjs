@@ -7,18 +7,33 @@ const FALLBACK = [
 export const VERSION = "3.17.2";
 let cache;
 
-function entry(m, base) {
+function entry(m) {
   return {
     id: m.id, name: m.id, reasoning: true, tool_call: true, attachment: !!m.image,
     modalities: { input: m.image ? ["text", "image"] : ["text"], output: ["text"] },
     limit: { context: m.context || 0, output: m.output || 0 },
     cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
-    ...(base ? { api: { id: m.id, url: base + "/v1", npm: "@ai-sdk/anthropic" } } : {}),
+  };
+}
+
+function model(m, base) {
+  const e = entry(m);
+  return {
+    id: m.id, providerID: "zcode-switch", name: m.id, status: "active",
+    api: { id: m.id, url: base + "/v1", npm: "@ai-sdk/anthropic" },
+    limit: e.limit, cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    options: {}, headers: {}, variants: {}, release_date: "",
+    capabilities: {
+      temperature: true, reasoning: e.reasoning, attachment: e.attachment, toolcall: true,
+      input: { text: true, image: !!m.image, audio: false, video: false, pdf: false },
+      output: { text: true, image: false, audio: false, video: false, pdf: false },
+      interleaved: false,
+    },
   };
 }
 
 export function fallbackModels(session = false, base) {
-  return Object.fromEntries(FALLBACK.filter((m) => !session || m.id !== "GLM-5.3").map((m) => [m.id, entry(m, base)]));
+  return Object.fromEntries(FALLBACK.filter((m) => !session || m.id !== "GLM-5.3").map((m) => [m.id, base ? model(m, base) : entry(m)]));
 }
 
 export async function accountModels(state) {
@@ -45,7 +60,7 @@ export async function accountModels(state) {
   const c = cfg?.config ?? {};
   const ids = new Set();
   for (const r of c.providerConfigRules?.providerRules ?? []) {
-    if (r.providerId === plan) for (const id of r.builtinModelIds ?? []) if (typeof id === "string") ids.add(id);
+    if (r.providerId === plan) for (const id of r.config?.builtinModelIds ?? []) if (typeof id === "string") ids.add(id);
   }
   const off = new Set();
   for (const r of c.modelConfigRules?.builtinProviderModelRules ?? []) {
@@ -65,7 +80,7 @@ export async function accountModels(state) {
       m.output = r.config?.optionSpecs?.maxOutputTokens?.max ?? m.output;
       m.image = r.config?.properties?.inputFormat?.supportsImage ?? m.image;
     }
-    out[id] = entry(m, state.base);
+    out[id] = model(m, state.base);
   }
   if (Object.keys(out).length) return out;
   const fallback = fallbackModels(state.session, state.base);

@@ -58,6 +58,8 @@ test("selection shows name/email and persists only references in distinct stable
   await hooks.config(cfg);
   assert.equal(cfg.provider.zcode.name, "Community ZCode");
   assert.equal(cfg.provider["zcode-switch"].npm, "@ai-sdk/anthropic");
+  assert.equal(cfg.provider["zcode-switch"].models["GLM-5.3"].reasoning, true);
+  assert.equal(cfg.provider["zcode-switch"].models["GLM-5.3"].capabilities, undefined);
   assert.match(hooks.auth.methods[0].prompts[0].options.find((o) => o.value === "zai-account").label, /Example Z.ai.*example@example.invalid/);
   await link({ account: "+", ids: "zai-account,cn-account,zai-account" });
   await link({ account: "zai-account" });
@@ -158,24 +160,25 @@ test("models use plan-specific config rules, safe fallback and cache without cre
   const auth = await link({ account: "zai-account" }); auth.type = "oauth";
   const fallback = await hooks.provider.models({}, { auth });
   assert.ok(fallback["GLM-5.3"]);
+  assert.equal(fallback["GLM-5.3"].capabilities.reasoning, true);
+  assert.equal(fallback["GLM-5.3"].capabilities.toolcall, true);
+  assert.equal(fallback["GLM-5.3"].capabilities.input.image, false);
+  assert.equal(fallback["GLM-5.3"].capabilities.output.text, true);
   assert.equal(fallback[Symbol.for("magpie.fellBack")], true);
   let calls = 0;
   globalThis.fetch = async (url, init) => {
     calls++;
     assert.equal(init.headers, undefined);
     if (String(url).includes("client/configs")) return Response.json({ data: { configs: { builtin_provider_config_json: "https://cdn.example.invalid/models.json" } } });
-    return Response.json({ config: {
-      providerConfigRules: { providerRules: [
-        { providerId: "account:zai-individual-coding-plan", builtinModelIds: ["GLM-Test", "Disabled"] },
-        { providerId: "account:bigmodel-individual-coding-plan", builtinModelIds: ["CN-Model"] },
-        { providerId: "account:zai-start-plan", builtinModelIds: ["Session-Model"] },
-      ] },
-      modelConfigRules: { builtinProviderModelRules: [{ providerId: "account:zai-individual-coding-plan", modelId: "Disabled", config: { enabled: false } }], modelRules: [{ modelMatch: "GLM-.*", config: { properties: { contextWindow: 12345 } } }] },
-    } });
+    return Response.json(JSON.parse(readFileSync(new URL("provider-config.json", import.meta.url), "utf8")));
   };
   const models = await hooks.provider.models({}, { auth });
-  assert.deepEqual(Object.keys(models), ["GLM-Test"]);
+  assert.deepEqual(Object.keys(models), ["GLM-Test", "Base-Only"]);
   assert.equal(models["GLM-Test"].limit.context, 12345);
+  assert.equal(models["GLM-Test"].capabilities.reasoning, true);
+  assert.equal(models["GLM-Test"].capabilities.input.image, true);
+  assert.equal(models["GLM-Test"].modalities, undefined);
+  assert.equal(models["Base-Only"].capabilities.input.image, false);
   for (const [id, expected] of [["cn-account", "CN-Model"], ["jwt-account", "Session-Model"]]) {
     const selected = await link({ account: id }); selected.type = "oauth";
     assert.deepEqual(Object.keys(await hooks.provider.models({}, { auth: selected })), [expected]);
