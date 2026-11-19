@@ -78,7 +78,7 @@ const actions = {
       if (!p.picked) return;
       const sealed = p.sealed || [];
       const preErrors = p.errors || [];
-      if (sealed.length) {
+      if (sealed.length && !preErrors.length) {
         openPwModal({ mode: "import", files: sealed, preErrors, onDone: (rep) => actions.finishImport(rep) });
         return;
       }
@@ -94,7 +94,8 @@ const actions = {
       if (report.added.length) parts.push(t("s.importAdded", { count: report.added.length, names: report.added.join(t("common.listSep")) }));
       if (report.skipped.length) parts.push(t("s.importSkipped", { count: report.skipped.length }));
       if (report.errors.length) parts.push(t("s.importFailed", { count: report.errors.length }));
-      toast(parts[0], report.errors.length ? "err" : "ok", parts.slice(1).join(t("common.listSep")));
+      parts.push(...(report.warnings || []));
+      toast(parts[0], report.errors.length || report.warnings?.length ? "err" : "ok", parts.slice(1).join(t("common.listSep")));
     }
     refresh().then(render);
   },

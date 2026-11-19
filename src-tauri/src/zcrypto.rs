@@ -1,4 +1,5 @@
 
+use aes_gcm::aead::rand_core::RngCore;
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -68,6 +69,23 @@ fn derive_key(secret: &str) -> [u8; 32] {
 
 pub fn is_encrypted(v: &str) -> bool {
     v.starts_with(PREFIX)
+}
+
+pub fn encrypt_with_secret(value: &str, secret: &str) -> Result<String, String> {
+    let mut nonce = [0u8; 12];
+    aes_gcm::aead::OsRng.fill_bytes(&mut nonce);
+    let key = derive_key(secret);
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce), value.as_bytes())
+        .map_err(|_| crate::i18n::tr("err.cipher.encrypt_local"))?;
+    let (data, tag) = ciphertext.split_at(ciphertext.len() - 16);
+    Ok(format!(
+        "{PREFIX}{}.{}.{}",
+        URL_SAFE_NO_PAD.encode(nonce),
+        URL_SAFE_NO_PAD.encode(tag),
+        URL_SAFE_NO_PAD.encode(data)
+    ))
 }
 
 pub fn decrypt_with_secret(value: &str, secret: &str) -> Result<String, String> {

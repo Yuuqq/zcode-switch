@@ -18,6 +18,7 @@ export const en = {
   "pw.encryptExport": "Encrypt & export",
   "pw.decryptImport": "Decrypt & import",
   "pw.errMinLen": "Password must be at least 6 characters",
+  "pw.errEmpty": "Password cannot be blank",
   "pw.errMismatch": "The two entries don't match",
   "pw.errWrong": "Wrong password, try again",
   "pw.exportedToast": "Encrypted export saved to {path}",

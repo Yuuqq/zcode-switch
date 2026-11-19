@@ -163,7 +163,8 @@ export function openPwModal(m) {
   async function confirm() {
     const pw1 = input1?.value || "";
     const pw2 = input2?.value;
-    if (pw1.length < 6) return (errEl.textContent = t("pw.errMinLen"));
+    if (!pw1.trim()) return (errEl.textContent = t("pw.errEmpty"));
+    if (m.mode !== "import" && Array.from(pw1).length < 6) return (errEl.textContent = t("pw.errMinLen"));
     if (pw2 !== undefined && pw2 !== null && pw1 !== pw2) return (errEl.textContent = t("pw.errMismatch"));
     go.disabled = true;
     try {
