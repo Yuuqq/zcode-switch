@@ -1,0 +1,17 @@
+{
+  "config": {
+    "providerConfigRules": { "providerRules": [
+      { "providerId": "account:zai-individual-coding-plan", "config": { "builtinModelIds": ["GLM-Test", "Base-Only", "Disabled"] } },
+      { "providerId": "account:bigmodel-individual-coding-plan", "config": { "builtinModelIds": ["CN-Model"] } },
+      { "providerId": "account:zai-start-plan", "config": { "builtinModelIds": ["Session-Model"] } }
+    ] },
+    "modelConfigRules": {
+      "builtinProviderModelRules": [
+        { "providerId": "account:zai-individual-coding-plan", "modelId": "Disabled", "config": { "enabled": false } }
+      ],
+      "modelRules": [
+        { "modelMatch": "GLM-.*", "config": { "properties": { "contextWindow": 12345, "inputFormat": { "supportsImage": true } } } }
+      ]
+    }
+  }
+}

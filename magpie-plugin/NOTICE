@@ -1,0 +1,13 @@
+Credential routing, request headers, model catalog/rule parsing and fallback
+approach adapted from magpie-community/plugins/packages/zcode (MIT):
+https://github.com/magpie-community/plugins
+Copyright (c) 2026 magpie-community contributors
+
+Reference-only multi-account design informed by magpie-zcode-start (MIT):
+https://github.com/cat-xierluo/magpie-zcode-start
+Copyright (c) 2026 Yang Weixin (cat-xierluo)
+Copyright (c) 2026 magpie-community contributors
+
+The MIT permission and disclaimer are reproduced in LICENSE. No claiming,
+activity reporting, background sign-in synchronization, or telemetry code
+from either plugin is included.

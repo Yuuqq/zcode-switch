@@ -1,0 +1,13 @@
+{
+  "name": "magpie-zcode-switch",
+  "version": "0.1.0",
+  "description": "Read-only, reference-based ZCode Switch accounts for Magpie",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "files": ["*.mjs", "README.md", "LICENSE", "NOTICE"],
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "magpie": { "maxConcurrency": 3 }
+}
