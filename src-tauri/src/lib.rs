@@ -2,6 +2,8 @@ pub mod cipher;
 pub mod cli;
 pub mod i18n;
 mod claim;
+mod claim_flow;
+mod claim_state;
 mod flowlog;
 mod oauth;
 mod probe;
@@ -22,6 +24,7 @@ const TRAY_ID: &str = "main";
 
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 
+#[derive(Clone)]
 struct PendingClaim {
     account_id: String,
     account_name: String,
@@ -32,9 +35,9 @@ struct PendingClaim {
     device_mid: String,
 }
 
-static PENDING_CLAIM: Mutex<Option<PendingClaim>> = Mutex::new(None);
+static PENDING_CLAIM: Mutex<claim_flow::Attempts<PendingClaim>> = Mutex::new(claim_flow::Attempts::new());
 
-fn pending_guard() -> std::sync::MutexGuard<'static, Option<PendingClaim>> {
+fn pending_guard() -> std::sync::MutexGuard<'static, claim_flow::Attempts<PendingClaim>> {
     match PENDING_CLAIM.lock() {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
@@ -230,7 +233,7 @@ struct ClaimRefreshResult {
 }
 
 #[tauri::command]
-async fn claim_refresh(id: String) -> Result<ClaimRefreshResult, String> {
+async fn claim_refresh(id: String, auto: Option<bool>) -> Result<ClaimRefreshResult, String> {
     let paths = Paths::detect();
     let mid = store::ensure_virtual_device_mid(&paths, &id)?;
     let acc = load_account(&paths, &id)?;
@@ -242,6 +245,11 @@ async fn claim_refresh(id: String) -> Result<ClaimRefreshResult, String> {
             },
             None => (false, None),
         };
+    if auto.unwrap_or(false) {
+        flowlog::log("auto-claim", "activation", &format!(
+            "account={id} activated={activated} error={}", activation_error.as_deref().unwrap_or("none")
+        ));
+    }
     let plans = claim::preview_plans(&paths.home, &acc.credentials, acc.config.as_ref(), Some(mid))?;
     Ok(ClaimRefreshResult { plans, activated, activation_error })
 }
@@ -252,7 +260,11 @@ async fn claim_start(
     id: String,
     plan_id: String,
     auto: Option<bool>,
+    attempt_id: String,
 ) -> Result<serde_json::Value, String> {
+    if uuid::Uuid::parse_str(&attempt_id).is_err() {
+        return Err(i18n::tr("err.claim.attempt"));
+    }
     let paths = Paths::detect();
     let mid = store::ensure_virtual_device_mid(&paths, &id)?;
     let acc = load_account(&paths, &id)?;
@@ -263,7 +275,7 @@ async fn claim_start(
         .ok_or_else(|| i18n::tr("err.claim.gone"))?;
     let display = if plan.name.is_empty() { plan.plan_id.clone() } else { plan.name.clone() };
 
-    *pending_guard() = Some(PendingClaim {
+    let started = pending_guard().start(attempt_id.clone(), PendingClaim {
         account_id: acc.id.clone(),
         account_name: acc.name.clone(),
         plan_id: plan.plan_id.clone(),
@@ -272,8 +284,14 @@ async fn claim_start(
         config: acc.config,
         device_mid: mid,
     });
-    open_captcha_window(&app, auto.unwrap_or(false))?;
-    Ok(json!({ "account": acc.name, "plan": display }))
+    if !started {
+        return Err(i18n::tr("err.claim.busy"));
+    }
+    if let Err(e) = open_captcha_window(&app, auto.unwrap_or(false), &attempt_id) {
+        pending_guard().cancel(&attempt_id);
+        return Err(e);
+    }
+    Ok(json!({ "account": acc.name, "plan": display, "attemptId": attempt_id }))
 }
 
 #[tauri::command]
@@ -286,8 +304,9 @@ async fn claim_captcha_submit(
     app: AppHandle,
     param: String,
     region: Option<String>,
+    attempt_id: String,
 ) -> Result<serde_json::Value, String> {
-    let pending = pending_guard().take().ok_or_else(|| i18n::tr("err.claim.none_pending"))?;
+    let pending = pending_guard().submit(&attempt_id).ok_or_else(|| i18n::tr("err.claim.none_pending"))?;
     let paths = Paths::detect();
     let res = claim::submit_claim(
         &paths.home,
@@ -298,7 +317,10 @@ async fn claim_captcha_submit(
         region.as_deref(),
         Some(pending.device_mid),
     );
-    close_captcha_window(&app);
+    let completed = pending_guard().cancel(&attempt_id);
+    if completed {
+        close_captcha_window(&app, &attempt_id);
+    }
     let payload = match res {
         Ok(v) => {
             let ms = |k: &str| -> Option<i64> {
@@ -318,18 +340,20 @@ async fn claim_captcha_submit(
                 ends_at: ms("ends_at"),
                 server_time,
             };
-            let p = serde_json::to_value(&outcome).unwrap_or(Value::Null);
-            let _ = app.emit("claim://result", &p);
+            let mut p = serde_json::to_value(&outcome).unwrap_or(Value::Null);
+            p["attemptId"] = json!(attempt_id);
+            if completed { let _ = app.emit("claim://result", &p); }
             p
         }
         Err(e) => {
-            let p = claim::failure_payload(
+            let mut p = claim::failure_payload(
                 &pending.account_id,
                 &pending.account_name,
                 &pending.plan_name,
                 &e,
             );
-            let _ = app.emit("claim://result", &p);
+            p["attemptId"] = json!(attempt_id);
+            if completed { let _ = app.emit("claim://result", &p); }
             return Ok(p);
         }
     };
@@ -337,14 +361,28 @@ async fn claim_captcha_submit(
 }
 
 #[tauri::command]
-async fn claim_cancel(app: AppHandle) -> Result<(), String> {
-    *pending_guard() = None;
-    close_captcha_window(&app);
+async fn claim_cancel(app: AppHandle, attempt_id: String) -> Result<(), String> {
+    let cancelled = pending_guard().cancel(&attempt_id);
+    if cancelled {
+        close_captcha_window(&app, &attempt_id);
+    }
     Ok(())
 }
 
-fn close_captcha_window(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("captcha") {
+#[tauri::command]
+async fn claim_cooldowns() -> Result<claim_state::Cooldowns, String> {
+    let _guard = store_guard();
+    claim_state::load(&Paths::detect(), chrono::Utc::now().timestamp_millis().max(0) as u64)
+}
+
+#[tauri::command]
+async fn claim_set_cooldown(id: String, until: u64) -> Result<(), String> {
+    let _guard = store_guard();
+    claim_state::set(&Paths::detect(), id, until, chrono::Utc::now().timestamp_millis().max(0) as u64)
+}
+
+fn close_captcha_window(app: &AppHandle, attempt_id: &str) {
+    if let Some(w) = app.get_webview_window(&format!("captcha-{attempt_id}")) {
         let _ = w.close();
     }
 }
@@ -793,23 +831,12 @@ fn spawn_poll_loop(app: AppHandle, provider: String, flow: String, mid: String, 
     });
 }
 
-fn open_captcha_window(app: &AppHandle, auto: bool) -> Result<(), String> {
+fn open_captcha_window(app: &AppHandle, auto: bool, attempt_id: &str) -> Result<(), String> {
     let (w, h) = (380.0, 320.0);
-    if let Some(win) = app.get_webview_window("captcha") {
-        let _ = win.eval("location.reload()");
-        center_over_main(app, &win, w, h);
-        if auto {
-            let _ = win.hide();
-        } else {
-            let _ = win.show();
-            let _ = win.set_focus();
-        }
-        return Ok(());
-    }
     let win = tauri::WebviewWindowBuilder::new(
         app,
-        "captcha",
-        tauri::WebviewUrl::App("captcha.html".into()),
+        format!("captcha-{attempt_id}"),
+        tauri::WebviewUrl::App(format!("captcha.html?attemptId={attempt_id}").into()),
     )
     .title(i18n::tr("title.captcha"))
     .theme(Some(tauri::Theme::Dark))
@@ -1150,6 +1177,8 @@ pub fn run() {
             claim_captcha_config,
             claim_captcha_submit,
             claim_cancel,
+            claim_cooldowns,
+            claim_set_cooldown,
             oauth_providers,
             oauth_begin,
             set_auth_proxy,
@@ -1180,8 +1209,8 @@ pub fn run() {
                         let _ = window.hide();
                     }
                 }
-                if window.label() == "captcha" {
-                    *pending_guard() = None;
+                if let Some(attempt_id) = window.label().strip_prefix("captcha-") {
+                    pending_guard().cancel(attempt_id);
                 }
             }
         })

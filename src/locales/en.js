@@ -1,4 +1,10 @@
 export const en = {
+  "m.claimAllSummary": "Claim all finished",
+  "m.claimAccountSummary": "{name}: {count} claimed · {status}",
+  "m.claimComplete": "No more unclaimed eligible plans",
+  "m.claimCap": "Per-account limit reached (5 plans)",
+  "m.claimUncertain": "Plan is no longer eligible after a transient failure; outcome is uncertain, stopped for safety",
+  "m.claimCooldownError": "Auto claim paused: cannot load/save cooldowns. Restart after fixing storage: {err}",
   "common.cancel": "Cancel",
   "common.confirm": "Confirm",
   "common.save": "Save",

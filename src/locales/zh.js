@@ -1,4 +1,10 @@
 export const zh = {
+  "m.claimAllSummary": "批量领取完成",
+  "m.claimAccountSummary": "{name}：已领取 {count} 项 · {status}",
+  "m.claimComplete": "没有更多未领取的可领套餐",
+  "m.claimCap": "达到单账号上限（5 项）",
+  "m.claimUncertain": "临时错误后该套餐已不可领，结果不确定，已安全停止",
+  "m.claimCooldownError": "自动领取已暂停：无法读取或保存冷却时间，请修复存储后重启：{err}",
   "common.cancel": "取消",
   "common.confirm": "确认",
   "common.save": "保存",

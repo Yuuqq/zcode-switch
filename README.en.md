@@ -18,12 +18,20 @@ A Tauri 2 desktop tool for one-click switching between multiple ZCode accounts, 
 
 ## Security Design
 
-- **Local first**: all data stays on your machine; no telemetry, no remote storage; quota queries go directly to official endpoints
-- **WebView CSP**: the `script-src` baseline is `'self'`; minimal third-party script/image sources are allowed for the official promotion web component. UI events do not rely on dynamic execution — they go through a whitelist-based dispatcher
+- **Local storage, official services**: account snapshots/settings are stored locally; quota and promotion requests go to official services. Refreshing promotion eligibility (manually or in auto mode) sends `app_launch` / `app_daily_active` events to `https://zcode.z.ai/api/v1/event/report`, as the official client does. These include user/device identifiers and client environment details. No fabricated/randomized activity is added.
+- **WebView CSP**: `script-src` allows `'self'`, `'unsafe-inline'`, `'unsafe-eval'`, and the configured Alibaba CDN/Aliyun script hosts for captcha. Styles allow inline content and configured CDN hosts; images allow `data:`, `blob:` and HTTPS. Connections, frames and workers use the allowlists in `src-tauri/tauri.conf.json`; `object-src` is `'none'`. Development additionally permits the local Vite HTTP/WebSocket server.
 - **No account loss**: the current login is auto-preserved before switching if not yet saved; file writes go through a temp file + atomic rename
 - **Path traversal protection**: account id whitelist (`[A-Za-z0-9-]`); delete/read cannot escape the account store directory
 - **Encrypted export**: PBKDF2-HMAC-SHA256 (100k iterations) + AES-256-GCM, random salt/nonce; wrong password simply fails, no plaintext traces
 - **Credentials decrypted locally only**: decryption is used solely to display username/email; export files are password-encrypted
+
+## Promotion claim behavior
+
+Each captcha/result is correlated with a unique attempt ID; timeouts cancel that attempt's pending verification. An already submitted HTTP request cannot be recalled, so the server may still complete it after a timeout.
+
+“Claim all” refreshes each account's eligibility, claims up to five distinct plans per account, refreshes after every success, and shows per-account totals/status at the end. Transient network/HTTP 5xx/timeouts get up to two retries with 1s/2s backoff and an eligibility recheck; business errors are not retried. If the outcome is uncertain and the plan disappears, that account stops rather than guessing success.
+
+Failed eligibility refreshes clear cached plans and mark them stale; auto mode never claims from stale plans. Auto cooldown deadlines persist in `~/.zcode-switch/claim-cooldowns.json` (under `ZCODE_SWITCH_HOME` when overridden) and expire at their stored deadline. Invalid/unwritable cooldown storage pauses auto mode until repaired and restarted. Auto activation-report diagnostics are recorded in the existing `logs/oauth.log` flow log under Tauri's app-local data directory and the frontend console, without changing the reported events.
 
 ## CLI
 

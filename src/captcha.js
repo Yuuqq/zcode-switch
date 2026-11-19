@@ -5,6 +5,7 @@ import { init, t, lang, stripErr } from "./i18n.js";
 
 const SDK_URL = "https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js";
 const TRACELESS_TIMEOUT = 8000;
+const attemptId = new URLSearchParams(location.search).get("attemptId");
 
 const $text = document.getElementById("cap-text");
 const $detail = document.getElementById("cap-detail");
@@ -24,7 +25,7 @@ document.addEventListener("securitypolicyviolation", (e) => {
   detail(t("c.cspBlocked", { directive: e.violatedDirective, uri: String(e.blockedURI).slice(0, 70) }));
 });
 
-const notifyStuck = () => { emit("captcha://interactive").catch(() => {}); };
+const notifyStuck = () => { emit("captcha://interactive", { attemptId }).catch(() => {}); };
 
 function loadSdk() {
   return new Promise((resolve, reject) => {
@@ -84,7 +85,7 @@ async function run() {
     submitted = true;
     clearTimeout(tracelessTimer);
     status(t("c.passed"));
-    invoke("claim_captcha_submit", { param, region }).catch((e) => {
+    invoke("claim_captcha_submit", { param, region, attemptId }).catch((e) => {
       status(t("c.claimReqFail"), "err");
       detail(stripErr(e));
     });

@@ -60,6 +60,8 @@ pub fn init_from_settings(s: &crate::store::Settings) {
 }
 
 const ZH: &[(&str, &str)] = &[
+    ("err.claim.attempt", "无效的领取请求标识"),
+    ("err.claim.busy", "已有领取请求正在进行"),
     ("err.write", "写入失败：{e}"),
     ("err.write_file", "写入失败 {path}: {e}"),
     ("err.rename_fail", "落盘失败 {path}: {e}"),
@@ -217,6 +219,8 @@ const ZH: &[(&str, &str)] = &[
 ];
 
 const EN: &[(&str, &str)] = &[
+    ("err.claim.attempt", "Invalid claim attempt ID"),
+    ("err.claim.busy", "A claim attempt is already pending"),
     ("err.write", "Write failed: {e}"),
     ("err.write_file", "Write failed {path}: {e}"),
     ("err.rename_fail", "Persist failed {path}: {e}"),

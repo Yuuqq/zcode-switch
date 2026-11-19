@@ -54,6 +54,7 @@ pub struct ClaimError {
     pub code: i64,
     pub message: String,
     pub next_at: Option<i64>,
+    pub retryable: bool,
 }
 
 impl From<String> for ClaimError {
@@ -62,6 +63,7 @@ impl From<String> for ClaimError {
             code: -1,
             message,
             next_at: None,
+            retryable: false,
         }
     }
 }
@@ -78,6 +80,7 @@ fn claim_error(code: i64, body: &Value) -> ClaimError {
         code,
         message: failure_message(code, body),
         next_at,
+        retryable: false,
     }
 }
 
@@ -95,6 +98,7 @@ pub fn failure_payload(
         "code": err.code,
         "nextAt": err.next_at,
         "message": err.message,
+        "retryable": err.retryable,
     })
 }
 
@@ -231,6 +235,7 @@ pub fn preview_plans(
 }
 
 fn http_err(prefix: &str, e: ureq::Error) -> String {
+    let prefix = if retryable_http(&e) { format!("transient:{prefix}") } else { prefix.to_string() };
     if let ureq::Error::Status(code, resp) = e {
         let body = resp.into_string().unwrap_or_default();
         let msg = serde_json::from_str::<Value>(&body)
@@ -244,6 +249,17 @@ fn http_err(prefix: &str, e: ureq::Error) -> String {
     format!("{prefix} {e}")
 }
 
+fn retryable_http(error: &ureq::Error) -> bool {
+    match error {
+        ureq::Error::Status(status, _) => (500..600).contains(status),
+        ureq::Error::Transport(error) => matches!(
+            error.kind(),
+            ureq::ErrorKind::Dns | ureq::ErrorKind::ConnectionFailed | ureq::ErrorKind::Io
+                | ureq::ErrorKind::ProxyConnect
+        ),
+    }
+}
+
 fn preview_once(url: &str, token: &str, mid: Option<String>) -> Result<Vec<ClaimPlan>, String> {
     let mut req = agent().get(url);
     for (k, v) in quota::zai_billing_headers_with_mid(token, mid) {
@@ -253,7 +269,7 @@ fn preview_once(url: &str, token: &str, mid: Option<String>) -> Result<Vec<Claim
         .call()
         .map_err(|e| http_err(&crate::i18n::tr("err.claim.preview_req"), e))?
         .into_string()
-        .map_err(|e| crate::i18n::trf("err.http.read", &[("e", &e.to_string())]))?;
+        .map_err(|e| crate::i18n::coded("transient", "err.http.read", &[("e", &e.to_string())]))?;
     let v: Value = serde_json::from_str(&resp).unwrap_or(Value::String(resp));
     let code = v.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
     if code != 0 {
@@ -295,12 +311,14 @@ pub fn submit_claim(
         .send_json(serde_json::json!({ "plan_id": plan_id }))
         .map_err(|e| ClaimError {
             code: -1,
+            retryable: retryable_http(&e),
             message: http_err(&crate::i18n::tr("err.claim.claim_req"), e),
             next_at: None,
         })?
         .into_string()
         .map_err(|e| ClaimError {
             code: -1,
+            retryable: true,
             message: crate::i18n::trf("err.http.read", &[("e", &e.to_string())]),
             next_at: None,
         })?;
@@ -415,6 +433,39 @@ fn fmt_units(n: f64) -> String {
         format!("{}万", trim(n / 1e4))
     } else {
         format!("{}", n.round() as i64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_network_and_server_errors_are_retryable() {
+        for status in [400, 401, 403, 404, 429, 500, 502, 503, 504] {
+            let error = ureq::Error::Status(status, ureq::Response::new(status, "test", "{}").unwrap());
+            assert_eq!(retryable_http(&error), status >= 500);
+            assert_eq!(http_err("request", error).starts_with("transient:"), status >= 500);
+        }
+        let timeout: ureq::Error = std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout").into();
+        assert!(retryable_http(&timeout));
+        let network: ureq::Error = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset").into();
+        assert!(retryable_http(&network));
+    }
+
+    #[test]
+    fn business_and_local_errors_are_not_retryable_and_keep_diagnostics() {
+        for code in [1001, 1005, 3007, 401, -1] {
+            let error = claim_error(code, &serde_json::json!({"data": {"plan": {"ends_at": 123}}}));
+            assert!(!error.retryable);
+            let payload = failure_payload("account", "name", "plan", &error);
+            assert_eq!(payload["retryable"], false);
+            assert_eq!(payload["code"], code);
+            assert_eq!(error.next_at, if code == 1005 { Some(123000) } else { None });
+        }
+        let error: ClaimError = "missing credential".to_string().into();
+        assert!(!error.retryable);
+        assert_eq!(failure_payload("a", "b", "c", &error)["message"], "missing credential");
     }
 }
 
