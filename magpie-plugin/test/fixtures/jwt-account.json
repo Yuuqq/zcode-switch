@@ -1,0 +1,8 @@
+{
+  "id": "jwt-account",
+  "name": "Example session",
+  "credentials": {
+    "oauth:active_provider": "zai",
+    "zcodejwttoken": "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjQxMDI0NDQ4MDB9.fixture"
+  }
+}

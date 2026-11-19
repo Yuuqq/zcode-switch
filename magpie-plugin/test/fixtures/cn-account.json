@@ -1,0 +1,6 @@
+{
+  "id": "cn-account",
+  "name": "Example BigModel",
+  "credentials": { "oauth:active_provider": "bigmodel" },
+  "config": { "provider": { "builtin:bigmodel-coding-plan": { "options": { "apiKey": "fixture.cn-key" } } } }
+}

@@ -16,6 +16,13 @@ A Tauri 2 desktop tool for one-click switching between multiple ZCode accounts, 
 - **Bilingual UI (中文 / English)**: one-click switch in Settings — main window, tray, error messages and CLI output all covered; first run follows your OS language
 - **Tray / autostart / CLI automation**
 
+### Magpie integration
+
+The optional [Magpie provider plugin](magpie-plugin/README.md#english) reads selected
+saved accounts without copying credentials or switching the active ZCode login.
+Install it from the local `magpie-plugin/` subdirectory; see its installation and
+security notes. Provider ID: `zcode-switch` (separate from community `zcode`).
+
 ## Security Design
 
 - **Local first**: all data stays on your machine; no telemetry, no remote storage; quota queries go directly to official endpoints

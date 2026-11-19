@@ -1,0 +1,9 @@
+{
+  "id": "zai-account",
+  "name": "Example Z.ai",
+  "credentials": {
+    "oauth:active_provider": "zai",
+    "oauth:zai:user_info": "{\"email\":\"example@example.invalid\"}",
+    "account-provider:coding-plan:account:zai-individual-coding-plan:account:fixture:api-key": "enc:v1:BwcHBwcHBwcHBwcH.QWzLCXYgCOsIKBQkO1LdYA.si_gQnJ3qOWY-Uu8_aBbWA"
+  }
+}
