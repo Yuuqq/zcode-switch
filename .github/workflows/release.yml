@@ -5,6 +5,41 @@ on:
     tags: ['v*']
 
 jobs:
+  magpie-plugin:
+    name: Package & upload Magpie plugin
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Test Magpie plugin
+        run: node --test test/*.test.mjs
+        working-directory: magpie-plugin
+      - name: Package Magpie plugin
+        shell: bash
+        run: |
+          OUT="$RUNNER_TEMP/magpie-plugin-assets"
+          mkdir -p "$OUT/zcode-switch-magpie-plugin"
+          cp magpie-plugin/{LICENSE,NOTICE,README.md,*.mjs,package.json} "$OUT/zcode-switch-magpie-plugin/"
+          cd "$OUT"
+          ZIP="zcode-switch-magpie-plugin-${GITHUB_REF_NAME}.zip"
+          TAR="zcode-switch-magpie-plugin-${GITHUB_REF_NAME}.tar.gz"
+          zip -r "$ZIP" zcode-switch-magpie-plugin
+          tar -czf "$TAR" zcode-switch-magpie-plugin
+          sha256sum "$ZIP" "$TAR" > "checksums-magpie-plugin-${GITHUB_REF_NAME}.txt"
+      - name: Upload Magpie plugin to desktop release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP/magpie-plugin-assets/zcode-switch-magpie-plugin-${GITHUB_REF_NAME}.zip" \
+            "$RUNNER_TEMP/magpie-plugin-assets/zcode-switch-magpie-plugin-${GITHUB_REF_NAME}.tar.gz" \
+            "$RUNNER_TEMP/magpie-plugin-assets/checksums-magpie-plugin-${GITHUB_REF_NAME}.txt" --clobber
+
   build:
     name: Build & Release (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

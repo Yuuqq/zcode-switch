@@ -23,6 +23,13 @@ saved accounts without copying credentials or switching the active ZCode login.
 Install it from the local `magpie-plugin/` subdirectory; see its installation and
 security notes. Provider ID: `zcode-switch` (separate from community `zcode`).
 
+Alternatively, download `zcode-switch-magpie-plugin-<tag>.zip` or `.tar.gz` from
+[Releases](https://github.com/Yuuqq/zcode-switch/releases), verify its SHA-256
+against `checksums-magpie-plugin-<tag>.txt`, and extract it. Install the extracted
+folder with `magpie plugin add /abs/path/zcode-switch-magpie-plugin` (use an
+absolute path, or `./zcode-switch-magpie-plugin` from its parent directory).
+Keep the extracted folder in place while using the plugin.
+
 ## Security Design
 
 - **Local storage, official services**: account snapshots/settings are stored locally; quota and promotion requests go to official services. Refreshing promotion eligibility (manually or in auto mode) sends `app_launch` / `app_daily_active` events to `https://zcode.z.ai/api/v1/event/report`, as the official client does. These include user/device identifiers and client environment details. No fabricated/randomized activity is added.

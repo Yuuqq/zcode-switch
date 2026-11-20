@@ -8,6 +8,18 @@ link. This package has no runtime dependencies (Node 20+ tests, Bun host).
 
 ### Install
 
+Download `zcode-switch-magpie-plugin-<tag>.zip` or `.tar.gz` from
+[Releases](https://github.com/Yuuqq/zcode-switch/releases), check its SHA-256
+using `checksums-magpie-plugin-<tag>.txt`, and extract it. Then run:
+
+```sh
+magpie plugin add /abs/path/zcode-switch-magpie-plugin
+```
+
+Use an absolute path (PowerShell: `(Resolve-Path .\zcode-switch-magpie-plugin).Path`),
+or `./zcode-switch-magpie-plugin` from the extracted folder's parent. Retain the
+folder while using it; install a newer release's extracted folder to update.
+
 Clone this repository, then add the **absolute local subdirectory**:
 
 ```sh
@@ -98,6 +110,15 @@ check establishes live vendor/captcha compatibility.
 路由与故障切换；插件只关联你明确选择的本地快照。
 
 ### 安装与选择账号
+
+可从 [Releases](https://github.com/Yuuqq/zcode-switch/releases) 下载
+`zcode-switch-magpie-plugin-<tag>.zip` 或 `.tar.gz`，按
+`checksums-magpie-plugin-<tag>.txt` 校验 SHA-256 后解压，执行
+`magpie plugin add /abs/path/zcode-switch-magpie-plugin`。请使用绝对路径
+（PowerShell 可用 `(Resolve-Path .\zcode-switch-magpie-plugin).Path`），或在父目录
+使用 `./zcode-switch-magpie-plugin`。保留解压目录，更新时安装新版解压后的目录。
+
+也可从源码安装：
 
 ```sh
 git clone https://github.com/Yuuqq/zcode-switch.git
