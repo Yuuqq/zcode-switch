@@ -437,7 +437,7 @@ const actions = {
         return;
       }
     }
-    let okCount = 0;
+    let okCount = 0, refreshedCount = 0, activationWarnings = 0;
     try {
       for (let i = 0; i < ids.length; i++) {
         const id = ids[i];
@@ -447,9 +447,13 @@ const actions = {
         if (!uiLocked()) render();
         try {
           const r = await invoke("claim_refresh", { id });
+          refreshedCount++;
           claimable[id] = { plans: r.plans || [], stale: false, err: null, busy: false };
           if ((r.plans || []).length) okCount++;
-          if (r.activationError) toast(t("m.refreshClaimAcctErr", { name, err: stripErr(r.activationError) }), "warn");
+          if (r.activationError) {
+            activationWarnings++;
+            toast(t("m.refreshClaimAcctErr", { name, err: stripErr(r.activationError) }), "warn");
+          }
         } catch (e) {
           claimable[id] = { plans: [], stale: true, err: String(e), busy: false };
           toast(t("m.refreshClaimAcctErr", { name, err: stripErr(e) }), "err");
@@ -464,7 +468,12 @@ const actions = {
       if (!uiLocked()) render();
       setTimeout(stopRefreshTickerIfIdle, 1100);
     }
-    toast(t("m.refreshClaimDone", { n: ids.length, k: okCount }), "ok");
+    const failedCount = ids.length - refreshedCount;
+    if (failedCount || activationWarnings) {
+      toast(t("m.refreshClaimPartial", { n: refreshedCount, k: okCount, f: failedCount, w: activationWarnings }), refreshedCount ? "warn" : "err");
+    } else {
+      toast(t("m.refreshClaimDone", { n: refreshedCount, k: okCount }), "ok");
+    }
   },
 
   async toggleAutoClaim() {

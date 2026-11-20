@@ -83,6 +83,7 @@ export const en = {
   "m.claimEndsAt": "Valid until {time}",
   "m.claimNextAt": " — available again after {time}",
   "m.refreshClaimDone": "Refreshed {n} accounts — {k} with claimable plans",
+  "m.refreshClaimPartial": "Refreshed {n} accounts — {k} with claimable plans; {f} failed, {w} activation-report warnings",
   "m.refreshClaimAcctErr": "\"{name}\" refresh failed: {err}",
   "m.autoClaimOn": "Auto claim enabled",
   "m.autoClaimOnDetail": "Checks immediately once enabled, then every 10 minutes",

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ic } from "./icons.js";
-import { t, has, errCode, stripErr } from "./i18n.js";
+import { t, has, stripErr } from "./i18n.js";
 
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
@@ -161,11 +161,13 @@ export function openPwModal(m) {
   input1.focus();
 
   async function confirm() {
+    if (go.disabled) return;
     const pw1 = input1?.value || "";
     const pw2 = input2?.value;
     if (!pw1.trim()) return (errEl.textContent = t("pw.errEmpty"));
     if (m.mode !== "import" && Array.from(pw1).length < 6) return (errEl.textContent = t("pw.errMinLen"));
     if (pw2 !== undefined && pw2 !== null && pw1 !== pw2) return (errEl.textContent = t("pw.errMismatch"));
+    errEl.textContent = "";
     go.disabled = true;
     try {
       if (m.mode === "export") {
@@ -181,8 +183,14 @@ export function openPwModal(m) {
         if (m.preErrors?.length) {
           report.errors = [...m.preErrors, ...(report.errors || [])];
         }
-        const wrongPw = (report.errors || []).some((e) => errCode(e) === "wrong_password" || String(e).includes("密码错误"));
-        if (wrongPw) { errEl.textContent = t("pw.errWrong"); go.disabled = false; return; }
+        const wrongPw = (report.errors || []).some((e) => /(?:^|[:：]\s*)wrong_password:/.test(String(e)) || String(e).includes("密码错误"));
+        if (wrongPw) {
+          errEl.textContent = t("pw.errWrong");
+          go.disabled = false;
+          input1.focus();
+          input1.select();
+          return;
+        }
         m.onDone?.(report);
       }
       mask.remove();
