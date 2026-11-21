@@ -3,12 +3,13 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { filterAccounts } from "../src/account-search.js";
 
 const source = readFileSync(new URL("../src/main.js", import.meta.url), "utf8")
   .replace(/^import .*;\n/gm, "")
   .split("\n(async () => {")[0];
 
-function harness(invoke) {
+function harness(invoke, picker = async (plans) => plans[0]?.plan_id ?? null) {
   const handlers = {}, timers = new Map(), calls = [], toasts = [], logs = [];
   let timerId = 0;
   const context = vm.createContext({
@@ -16,6 +17,8 @@ function harness(invoke) {
     crypto: { randomUUID },
     console: { info: (...args) => logs.push(args), warn: (...args) => logs.push(args), error: (...args) => logs.push(args) },
     installDelegation: () => {},
+    pickClaimPlan: picker,
+    filterAccounts,
     t: (key, params) => params ? `${key}:${JSON.stringify(params)}` : key,
     toast: (...args) => toasts.push(args),
     stripErr: (e) => String(e).replace(/^[a-z_]+:/, ""),
@@ -44,7 +47,9 @@ function harness(invoke) {
     autoCooldownReady = true;
     globalThis.api = { actions, runClaimAttempt, autoClaimTick,
       setAccounts: (accounts) => { state.accounts = accounts; },
-      snapshot: () => ({ claimable, autoClaimCooldown, autoCooldownReady }) };
+      setSearch: (query) => { accountSearch = query; },
+      visible: () => filterAccounts(state.accounts, accountSearch),
+      snapshot: () => ({ claimable, claimActive, autoClaimCooldown, autoCooldownReady }) };
   `, context);
   return { api: context.api, calls, handlers, timers, toasts, logs };
 }
@@ -77,6 +82,69 @@ test("manual timeout cancels the same attempt", async () => {
   const cancel = h.calls.find(([command]) => command === "claim_cancel");
   assert.equal(cancel[1].attemptId, start[1].attemptId);
   assert.equal(h.timers.size, 0);
+});
+
+test("manual claim submits the chosen plan through the existing attempt lifecycle", async () => {
+  const h = harness(async (command, args, emit) => {
+    if (command === "claim_start") emit(success(args));
+  }, async (plans) => { assert.equal(plans.length, 2); return "second"; });
+  h.api.snapshot().claimable.account = { plans: [{ plan_id: "first" }, { plan_id: "second" }] };
+  await h.api.actions.claim("account");
+  const start = h.calls.find(([command]) => command === "claim_start")[1];
+  assert.equal(start.planId, "second");
+  assert.match(start.attemptId, /^[0-9a-f-]{36}$/);
+  assert.equal(h.calls.find(([command]) => command === "claim_cancel")[1].attemptId, start.attemptId);
+  assert.equal(h.api.snapshot().claimActive, false);
+});
+
+for (const choice of [null, "missing"]) {
+  test(`manual picker ${choice === null ? "cancellation" : "invalid selection"} never starts a claim`, async () => {
+    const h = harness(async () => { throw new Error("No request expected"); }, async () => choice);
+    h.api.snapshot().claimable.account = { plans: [{ plan_id: "one" }, { plan_id: "two" }] };
+    await h.api.actions.claim("account");
+    assert.equal(h.calls.length, 0);
+    assert.equal(h.api.snapshot().claimActive, false);
+    if (choice !== null) assert.equal(h.toasts.at(-1)[0], "m.planPickerGone");
+  });
+}
+
+test("eligibility becoming stale while choosing cannot start a claim", async () => {
+  let choose;
+  const h = harness(async () => { throw new Error("No request expected"); }, () => new Promise((resolve) => { choose = resolve; }));
+  h.api.snapshot().claimable.account = { plans: [{ plan_id: "one" }, { plan_id: "two" }] };
+  const pending = h.api.actions.claim("account");
+  h.api.snapshot().claimable.account.stale = true;
+  choose("two");
+  await pending;
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.toasts.at(-1)[0], "m.planPickerGone");
+  assert.equal(h.api.snapshot().claimActive, false);
+});
+
+test("picker errors release the busy flag without claiming", async () => {
+  const h = harness(async () => {}, async () => { throw new Error("picker failed"); });
+  h.api.snapshot().claimable.account = { plans: [{ plan_id: "one" }, { plan_id: "two" }] };
+  await h.api.actions.claim("account");
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.api.snapshot().claimActive, false);
+  assert.equal(h.toasts.at(-1)[1], "err");
+});
+
+test("search does not narrow claim-all or eligibility refresh", async () => {
+  const claimed = new Set();
+  const h = harness(async (command, args, emit) => {
+    if (command === "claim_refresh") return { plans: [] };
+    if (command === "claim_preview") return claimed.has(args.id) ? [] : [{ plan_id: "plan" }];
+    if (command === "claim_start") { claimed.add(args.id); emit(success(args)); }
+  });
+  h.api.setAccounts([{ id: "visible", name: "Visible" }, { id: "hidden", name: "Hidden" }]);
+  h.api.setSearch("visible");
+  assert.equal(h.api.visible().length, 1);
+  await h.api.actions.refreshClaim();
+  assert.deepEqual(h.calls.filter(([command]) => command === "claim_refresh").map(([, args]) => args.id), ["visible", "hidden"]);
+  await h.api.actions.claimAll();
+  assert.deepEqual(h.calls.filter(([command]) => command === "claim_start").map(([, args]) => args.id), ["visible", "hidden"]);
+  assert.equal(h.api.visible().length, 1);
 });
 
 test("claim all exhausts fresh plans, retries transient failure, and summarizes per account", async () => {

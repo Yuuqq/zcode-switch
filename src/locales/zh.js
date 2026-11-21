@@ -1,4 +1,12 @@
 export const zh = {
+  "m.searchLabel": "搜索名称、邮箱、用户身份或平台 · Esc 清空",
+  "m.searchEmpty": "没有匹配的账号，请在搜索框中按 Esc 清空筛选。",
+  "m.searchCount": "{shown} / {total} 个账号",
+  "m.searchBatchScope": "批量领取和刷新仍覆盖全部 {count} 个账号，包括筛选隐藏的账号。",
+  "m.planPickerTitle": "为 {name} 选择领取方案",
+  "m.planPickerHint": "请选择一个可领取方案，验证前会再次检查领取资格。",
+  "m.planPickerGone": "该方案已不可领取或资格信息已过期，请刷新后重新选择。",
+  "btn.choosePlan": "选择方案（{count}）",
   "m.claimAllSummary": "批量领取完成",
   "m.claimAccountSummary": "{name}：已领取 {count} 项 · {status}",
   "m.claimComplete": "没有更多未领取的可领套餐",

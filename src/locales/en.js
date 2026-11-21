@@ -1,4 +1,12 @@
 export const en = {
+  "m.searchLabel": "Search name, email, identity or provider · Esc to clear",
+  "m.searchEmpty": "No accounts match this search. Press Esc in the search box to clear it.",
+  "m.searchCount": "{shown} / {total} accounts",
+  "m.searchBatchScope": "Claim all and refresh still cover all {count} accounts, including hidden accounts.",
+  "m.planPickerTitle": "Choose a plan for {name}",
+  "m.planPickerHint": "Select one eligible plan. Eligibility is checked again before verification.",
+  "m.planPickerGone": "This plan is no longer eligible or eligibility is stale. Refresh and choose again.",
+  "btn.choosePlan": "Choose plan ({count})",
   "m.claimAllSummary": "Claim all finished",
   "m.claimAccountSummary": "{name}: {count} claimed · {status}",
   "m.claimComplete": "No more unclaimed eligible plans",
