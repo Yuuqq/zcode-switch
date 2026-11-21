@@ -121,6 +121,8 @@ pub struct Account {
     pub credentials: Value,
     #[serde(default)]
     pub config: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_plaintext_fields: Vec<String>,
     #[serde(default)]
     pub virtual_device_mid: Option<String>,
     #[serde(default)]
@@ -139,12 +141,17 @@ pub struct Settings {
     #[serde(default)]
     pub auth_proxy_url: Option<String>,
     #[serde(default)]
+    pub login_method: Option<String>,
+    #[serde(default)]
     pub language: Option<String>,
     #[serde(default)]
     pub auto_claim: Option<bool>,
 }
 
 impl Settings {
+    pub fn login_method(&self) -> &str {
+        if self.login_method.as_deref() == Some("in-app") { "in-app" } else { "browser" }
+    }
     pub fn launch_after_switch(&self) -> bool { self.launch_after_switch.unwrap_or(true) }
     pub fn close_to_tray(&self) -> bool { self.close_to_tray.unwrap_or(true) }
     pub fn hot_switch(&self) -> bool { self.hot_switch.unwrap_or(false) }
@@ -188,6 +195,7 @@ pub struct AppState {
     pub hot_switch: bool,
     pub auto_claim: bool,
     pub auth_proxy_on: bool,
+    pub login_method: String,
     pub auth_proxy_url: Option<String>,
     pub language: String,
 }
@@ -303,6 +311,35 @@ pub fn write_live_config(paths: &Paths, v: &Value) -> Result<(), String> {
     atomic_write(&paths.live_config(), &body)
 }
 
+pub(crate) fn write_account_config(paths: &Paths, account: &Account) -> Result<(), String> {
+    let Some(mut config) = account.config.clone() else { return Ok(()); };
+    let secret = zcrypto::default_secret(&paths.home);
+    for pointer in &account.config_plaintext_fields {
+        let field = config.pointer_mut(pointer).ok_or_else(|| tr("err.bundle.fields"))?;
+        let encrypted = field.as_str().ok_or_else(|| tr("err.bundle.fields"))?;
+        *field = Value::String(zcrypto::decrypt_with_secret(encrypted, &secret)?);
+    }
+    write_live_config(paths, &config)
+}
+
+fn write_config_then_live(paths: &Paths, target: &Account, creds: &Value) -> Result<(), String> {
+    let restore_config = target.config.is_some() && !new_gen_provider_config(&paths.data_root);
+    let previous = if restore_config { fs::read_to_string(paths.live_config()).ok() } else { None };
+    if restore_config {
+        write_account_config(paths, target).map_err(|e| trf("err.write_config", &[("e", &e)]))?;
+    }
+    if let Err(e) = write_live(paths, creds) {
+        if restore_config {
+            let _ = match &previous {
+                Some(body) => atomic_write(&paths.live_config(), body),
+                None => fs::remove_file(paths.live_config()).map_err(|e| e.to_string()),
+            };
+        }
+        return Err(trf("err.write", &[("e", &e)]));
+    }
+    Ok(())
+}
+
 pub(crate) fn in_sandbox() -> bool {
     std::env::var("ZCODE_SWITCH_HOME").is_ok()
 }
@@ -405,6 +442,13 @@ pub fn launch_zcode(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(any(windows, test))]
+pub(crate) fn windows_browser_command(url: &str) -> Command {
+    let mut cmd = no_window("rundll32.exe");
+    cmd.args(["url.dll,FileProtocolHandler", url]);
+    cmd
+}
+
 pub fn open_url(url: &str) -> Result<(), String> {
     if !url.starts_with("https://") {
         return Err("仅支持 https 链接".into());
@@ -413,11 +457,7 @@ pub fn open_url(url: &str) -> Result<(), String> {
         return Ok(());
     }
     #[cfg(windows)]
-    let cmd = {
-        let mut c = no_window("cmd");
-        c.args(["/c", "start", "", url]);
-        c
-    };
+    let cmd = windows_browser_command(url);
     #[cfg(target_os = "macos")]
     let cmd = {
         let mut c = no_window("open");
@@ -430,7 +470,7 @@ pub fn open_url(url: &str) -> Result<(), String> {
         c.arg(url);
         c
     };
-    let _ = detached(cmd).spawn();
+    detached(cmd).spawn().map_err(|e| trf("err.oauth.browser", &[("e", &e.to_string())]))?;
     Ok(())
 }
 
@@ -529,8 +569,14 @@ pub fn list_accounts(paths: &Paths) -> Result<Vec<Account>, String> {
 
 pub fn save_account(paths: &Paths, acc: &Account) -> Result<(), String> {
     paths.ensure_dirs()?;
+    let mut acc = acc.clone();
+    let mut config = acc.config.take().unwrap_or(Value::Null);
+    acc.config_plaintext_fields.retain(|p| config.pointer(p).and_then(Value::as_str).is_some_and(zcrypto::is_encrypted));
+    let fields = crate::oauth::encrypt_login_snapshot(&mut acc.credentials, &mut config, &zcrypto::default_secret(&paths.home))?;
+    acc.config_plaintext_fields.extend(fields);
+    acc.config = (!config.is_null()).then_some(config);
     let path = paths.accounts_dir().join(format!("{}.json", acc.id));
-    let body = serde_json::to_string_pretty(acc).unwrap_or_default() + "\n";
+    let body = serde_json::to_string_pretty(&acc).unwrap_or_default() + "\n";
     atomic_write(&path, &body)
 }
 
@@ -596,6 +642,7 @@ pub fn capture_current(paths: &Paths, name: Option<String>) -> Result<Account, S
         hash,
         credentials: live,
         config,
+        config_plaintext_fields: vec![],
         virtual_device_mid: None,
         virtual_arms_uid: None,
     };
@@ -607,6 +654,15 @@ pub fn capture_current(paths: &Paths, name: Option<String>) -> Result<Account, S
 pub(crate) fn find_same_login(live: &Value, live_hash: &str, accounts: &[Account], home: &Path) -> Option<usize> {
     if let Some(i) = accounts.iter().position(|a| a.hash == live_hash) {
         return Some(i);
+    }
+    let secret = zcrypto::default_secret(home);
+    if let Ok(plain) = zcrypto::decrypt_value(live, &secret) {
+        let hash = canonical_hash(&plain);
+        if let Some(i) = accounts.iter().position(|a| {
+            zcrypto::decrypt_value(&a.credentials, &secret).is_ok_and(|plain| canonical_hash(&plain) == hash)
+        }) {
+            return Some(i);
+        }
     }
     let live_id = zcrypto::account_identity(live, home);
     if !identity_has_signal(&live_id) {
@@ -639,6 +695,7 @@ fn auto_preserve(paths: &Paths, accounts: &[Account], target_hash: &str) -> Resu
         hash,
         credentials: live,
         config: snapshot_config_from_live(paths),
+        config_plaintext_fields: vec![],
         virtual_device_mid: None,
         virtual_arms_uid: None,
     };
@@ -688,6 +745,7 @@ fn sync_live_back_to_source(paths: &Paths, accounts: &[Account]) -> Result<(), S
         let cfg = read_live_config(paths);
         if cfg.is_some() && cfg != src.config {
             src.config = cfg;
+            src.config_plaintext_fields.clear();
             changed = true;
         }
     }
@@ -902,8 +960,6 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
     let preserved_as = auto_preserve(paths, &accounts, &target.hash)?;
 
     let creds = inject_relay_pass_hash(&target.credentials, current_relay_pass(paths).as_ref());
-    write_live(paths, &creds)?;
-    backfill_relay_pass_hash(paths, &target.id, &creds);
     let new_gen = new_gen_provider_config(&paths.data_root);
     if new_gen {
         eprintln!(
@@ -911,11 +967,8 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
             crate::quota::zcode_app_version()
         );
     }
-    if let Some(cfg) = &target.config {
-        if !new_gen {
-            write_live_config(paths, cfg)?;
-        }
-    }
+    write_config_then_live(paths, &target, &creds)?;
+    backfill_relay_pass_hash(paths, &target.id, &creds);
     reset_live_plan_cache(paths);
     align_family_domain(paths, &target);
     if !new_gen {
@@ -991,19 +1044,10 @@ fn hot_swap_verified(paths: &Paths, target: &Account, creds: &Value) -> Result<(
     let mut last_err: Option<String> = None;
     let backoff = |attempt: u32| std::thread::sleep(std::time::Duration::from_millis(250 + u64::from(attempt) * 250));
     for attempt in 0..3u32 {
-        if let Err(e) = write_live(paths, creds) {
-            last_err = Some(trf("err.write", &[("e", &e)]));
+        if let Err(e) = write_config_then_live(paths, target, creds) {
+            last_err = Some(e);
             backoff(attempt);
             continue;
-        }
-        if let Some(cfg) = &target.config {
-            if !new_gen_provider_config(&paths.data_root) {
-                if let Err(e) = write_live_config(paths, cfg) {
-                    last_err = Some(trf("err.write_config", &[("e", &e)]));
-                    backoff(attempt);
-                    continue;
-                }
-            }
         }
         if let Ok(Some(v)) = read_live(paths) {
             if verify(&v) {
@@ -1096,6 +1140,7 @@ pub fn update_account_from_live(paths: &Paths, id: &str) -> Result<Account, Stri
     acc.credentials = live;
     if !new_gen_provider_config(&paths.data_root) {
         acc.config = read_live_config(paths);
+        acc.config_plaintext_fields.clear();
     }
     acc.updated_at = now_ts();
     save_account(paths, &acc)?;
@@ -1395,9 +1440,9 @@ pub fn get_state(paths: &Paths) -> Result<AppState, String> {
     let live = read_live(paths)?;
     let live_hash = live.as_ref().map(canonical_hash);
     let live_logged_in = live.as_ref().map(is_logged_in).unwrap_or(false);
-    let active_account_id = live_hash
-        .as_ref()
-        .and_then(|h| accounts.iter().find(|a| &a.hash == h).map(|a| a.id.clone()));
+    let active_account_id = live.as_ref().zip(live_hash.as_deref())
+        .and_then(|(live, hash)| find_same_login(live, hash, &accounts, &paths.home))
+        .map(|i| accounts[i].id.clone());
     let live_identity = live
         .as_ref()
         .filter(|_| live_logged_in)
@@ -1411,7 +1456,7 @@ pub fn get_state(paths: &Paths) -> Result<AppState, String> {
             name: a.name.clone(),
             created_at: a.created_at.clone(),
             updated_at: a.updated_at.clone(),
-            is_active: live_hash.as_deref() == Some(a.hash.as_str()),
+            is_active: active_account_id.as_deref() == Some(a.id.as_str()),
             has_config: a.config.is_some(),
             has_user_info: crate::claim::telemetry_user_id(&paths.home, &a.credentials).is_some(),
             jwt_expired: account_jwt_expired(&a.credentials, &paths.home),
@@ -1434,6 +1479,7 @@ pub fn get_state(paths: &Paths) -> Result<AppState, String> {
         hot_switch: settings.hot_switch(),
         auto_claim: settings.auto_claim(),
         auth_proxy_on: settings.auth_proxy_on.unwrap_or(false),
+        login_method: settings.login_method().to_string(),
         auth_proxy_url: settings.auth_proxy_url.clone(),
         language: crate::i18n::current().as_str().to_string(),
     })

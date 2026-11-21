@@ -764,7 +764,7 @@ input:focus-visible,
 }
 .pg-exp { margin-left: auto; flex: none; font-family: var(--mono); font-size: 11.5px; color: var(--ink-mute); white-space: nowrap; }
 
-.pw-mask {
+.pw-mask, .export-report-mask {
   position: fixed;
   inset: 0;
   background: rgba(10, 11, 14, .72);
@@ -797,6 +797,18 @@ input:focus-visible,
   margin-bottom: 9px;
 }
 .pw-input:focus { outline: none; border-color: var(--amber-deep); }
+.pw-field { display: flex; gap: 6px; margin-bottom: 9px; }
+.pw-field .pw-input { min-width: 0; flex: 1; margin-bottom: 0; }
+.pw-toggle { flex: none; }
+.pw-username { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden; }
+.export-report-panel { width: 700px; max-height: 90vh; overflow-y: auto; }
+.export-report-summary, .export-report-results { user-select: text; }
+.export-report-panel h3 { font-size: 14px; margin-bottom: 8px; color: var(--amber); }
+.export-report-results { max-height: 45vh; overflow-y: auto; }
+.export-report-results table { border-collapse: collapse; table-layout: fixed; width: 100%; font-size: 13px; }
+.export-report-results th, .export-report-results td { text-align: left; vertical-align: top; padding: 8px; border-bottom: 1px solid var(--hairline); overflow-wrap: anywhere; }
+.export-report-results th:first-child { width: 28%; }
+.export-report-status { min-height: 20px; margin: 10px 0; font-size: 13px; color: var(--amber); }
 .pw-err { font-size: 14px; color: var(--red); min-height: 16px; margin-bottom: 6px; }
 .pw-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .pw-actions .pw-go { flex: none; padding: 8px 18px; }
@@ -1047,3 +1059,17 @@ input:focus-visible,
 .diagnostic-facts dt { color: var(--ink-mute); overflow-wrap: anywhere; }
 .diagnostic-facts dd { margin: 0; overflow-wrap: anywhere; user-select: text; }
 .magpie-install { width: 100%; margin: 8px 0; padding: 10px; resize: vertical; color: var(--ink); background: var(--bg-2); border: 1px solid var(--hairline); border-radius: 7px; font-family: var(--mono); font-size: 12px; user-select: text; }
+
+.account-search-bar { padding: 0 18px 12px; flex: none; }
+.account-search {
+  width: 100%; padding: 9px 12px;
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--hairline); border-radius: 7px;
+  font-family: var(--body); font-size: 13px;
+}
+.search-scope { margin-top: 6px; color: var(--ink-dim); font-size: 12px; }
+.plan-picker-list { max-height: 50vh; overflow-y: auto; }
+.plan-choice { flex-direction: column; align-items: flex-start; gap: 4px; overflow-wrap: anywhere; }
+.plan-choice-name { font-weight: 600; }
+.plan-choice-id { font-family: var(--mono); font-size: 11px; color: var(--ink-mute); }
+.plan-choice-detail { font-size: 12px; color: var(--ink-dim); line-height: 1.5; }

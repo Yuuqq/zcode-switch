@@ -66,12 +66,12 @@ function settingsHarness(invoke) {
     window: {}, esc, t, invoke, toast: (...args) => toasts.push(args),
     navigator: { clipboard: { writeText: async (text) => copied.push(text) } },
     connectivityHtml: view.connectivityHtml, magpieHtml: view.magpieHtml, releaseUrl: view.releaseUrl, installSteps: view.installSteps,
-    listen() {}, installDelegation() {}, ic: () => "", lang: () => "en",
+    listen() {}, installDelegation() {}, init() {}, ic: () => "", lang: () => "en",
   });
   const settingsSource = readFileSync(new URL("../src/settings.js", import.meta.url), "utf8")
     .replace(/^import .*;\n/gm, "").split("\n(async () => {")[0];
   vm.runInContext(`${settingsSource}
-    state = { accounts: [], language: 'en', auth_proxy_url: 'http://saved:8080', auth_proxy_on: false, zcode_path: '' };
+    state = { accounts: [], language: 'en', login_method: 'browser', auth_proxy_url: 'http://saved:8080', auth_proxy_on: false, zcode_path: '' };
     appVer = '1.7.0-beta.3';
     globalThis.api = { actions, render };
   `, context);
@@ -125,4 +125,25 @@ test("only one test runs at a time and successful results preserve the unsaved p
   assert.match(h.app.innerHTML, /http:\/\/new-draft:1234/);
   assert.match(h.app.innerHTML, /diag.route/);
   assert.doesNotMatch(h.app.innerHTML, /diag.testing|diag.failed/);
+});
+
+test("login method changes retain proxy diagnostics and the unsaved proxy draft", async () => {
+  const calls = [];
+  let method = "browser";
+  const h = settingsHarness(async (command, args) => {
+    calls.push([command, args]);
+    if (command === "set_login_method") method = args.method;
+    if (command === "get_state") return { accounts: [], language: "en", login_method: method, auth_proxy_url: "http://saved:8080", auth_proxy_on: false, zcode_path: "" };
+    if (command === "autostart_status") return false;
+  });
+  h.api.render();
+  assert.match(h.app.innerHTML, /aria-checked="true" click="actions.setLoginMethod\('browser'\)"/);
+  await h.api.actions.setLoginMethod("in-app");
+  assert.equal(calls[0][0], "set_login_method");
+  assert.equal(calls[0][1].method, "in-app");
+  assert.match(h.app.innerHTML, /aria-checked="true" click="actions.setLoginMethod\('in-app'\)"/);
+  assert.match(h.app.innerHTML, /actions.testProxy\(\)/);
+  assert.match(h.app.innerHTML, /diag.proxyHint/);
+  assert.match(h.app.innerHTML, /diag.magpieTitle/);
+  assert.match(h.app.innerHTML, /http:\/\/localhost:9999/);
 });

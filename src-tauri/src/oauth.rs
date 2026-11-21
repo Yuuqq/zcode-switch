@@ -457,6 +457,40 @@ pub fn assemble_credentials_with_token(
     Value::Object(m)
 }
 
+pub(crate) fn encrypt_login_snapshot(credentials: &mut Value, config: &mut Value, secret: &str) -> Result<Vec<String>, String> {
+    fn encrypt(value: &mut Value, secret: &str) -> Result<(), String> {
+        if let Some(s) = value.as_str().filter(|s| !s.is_empty() && !crate::zcrypto::is_encrypted(s)) {
+            *value = Value::String(crate::zcrypto::encrypt_with_secret(s, secret)?);
+        }
+        Ok(())
+    }
+    fn encrypt_keys(value: &mut Value, pointer: &str, secret: &str, fields: &mut Vec<String>) -> Result<(), String> {
+        match value {
+            Value::Object(map) => for (key, value) in map {
+                let child = format!("{pointer}/{}", key.replace('~', "~0").replace('/', "~1"));
+                if key == "apiKey" {
+                    let plaintext = value.as_str().is_some_and(|s| !s.is_empty() && !crate::zcrypto::is_encrypted(s));
+                    encrypt(value, secret)?;
+                    if plaintext { fields.push(child); }
+                } else { encrypt_keys(value, &child, secret, fields)?; }
+            },
+            Value::Array(items) => for (i, item) in items.iter_mut().enumerate() { encrypt_keys(item, &format!("{pointer}/{i}"), secret, fields)?; },
+            _ => {}
+        }
+        Ok(())
+    }
+    if let Some(map) = credentials.as_object_mut() {
+        for (key, value) in map {
+            if key == "zcodejwttoken" || (key.starts_with("oauth:") && (key.ends_with(":access_token") || key.ends_with(":refresh_token"))) {
+                encrypt(value, secret)?;
+            }
+        }
+    }
+    let mut fields = vec![];
+    encrypt_keys(config, "", secret, &mut fields)?;
+    Ok(fields)
+}
+
 pub const BIGMODEL_BIZ_BASE: &str = "https://bigmodel.cn";
 pub const ZAI_API_BASE: &str = "https://api.z.ai";
 pub const ZAI_BUSINESS_LOGIN_URL: &str = "https://api.z.ai/api/auth/z/login";

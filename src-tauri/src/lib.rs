@@ -13,6 +13,8 @@ mod quota;
 mod store;
 mod transfer;
 mod zcrypto;
+#[cfg(test)]
+mod login_tests;
 
 use serde_json::{json, Value};
 use std::sync::Mutex;
@@ -413,6 +415,38 @@ fn pending_oauth_guard() -> std::sync::MutexGuard<'static, Option<PendingOAuth>>
     }
 }
 
+fn cancel_oauth_flow(pending: &mut Option<PendingOAuth>, flow: Option<&str>) -> bool {
+    if pending.as_ref().is_some_and(|p| flow.map_or(true, |id| p.flow == id)) {
+        *pending = None;
+        true
+    } else {
+        false
+    }
+}
+
+#[tauri::command]
+async fn oauth_cancel(app: AppHandle, flow: Option<String>) -> Result<(), String> {
+    let _lock = store_guard();
+    if cancel_oauth_flow(&mut pending_oauth_guard(), flow.as_deref()) {
+        if let Some(w) = app.get_webview_window("login") { let _ = w.close(); }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_login_method(app: AppHandle, method: String) -> Result<(), String> {
+    if method != "browser" && method != "in-app" { return Err(i18n::tr("err.oauth.login_method")); }
+    {
+        let _lock = store_guard();
+        let paths = Paths::detect();
+        let mut settings = load_settings(&paths);
+        settings.login_method = Some(method);
+        save_settings(&paths, &settings)?;
+    }
+    let _ = app.emit("state-changed", ());
+    Ok(())
+}
+
 #[tauri::command]
 async fn oauth_providers() -> Result<Vec<oauth::OAuthProvider>, String> {
     Ok(oauth::OAUTH_PROVIDERS.to_vec())
@@ -423,18 +457,21 @@ async fn oauth_begin(app: AppHandle, provider: String) -> Result<serde_json::Val
     if !oauth::OAUTH_PROVIDERS.iter().any(|p| p.id == provider) {
         return Err(i18n::trf("err.oauth.unknown_provider", &[("provider", &provider)]));
     }
-    let proxy_url: Option<tauri::Url> = match load_settings(&Paths::detect()).auth_proxy() {
+    let settings = load_settings(&Paths::detect());
+    let browser = settings.login_method() == "browser";
+    let proxy_url: Option<tauri::Url> = match settings.auth_proxy().filter(|_| !browser) {
         Some(p) => {
             let norm = oauth::parse_proxy_url(p)?;
             Some(norm.parse::<tauri::Url>().map_err(|e| i18n::trf("err.proxy.invalid", &[("e", &e.to_string())]))?)
         }
         None => None,
     };
-    *pending_oauth_guard() = None;
-    if let Some(w) = app.get_webview_window("login") {
-        let _ = w.close();
-    }
     let flow = uuid::Uuid::new_v4().to_string();
+    {
+        let _lock = store_guard();
+        *pending_oauth_guard() = Some(PendingOAuth { provider: provider.clone(), state: String::new(), flow: flow.clone() });
+        if let Some(w) = app.get_webview_window("login") { let _ = w.close(); }
+    }
     flowlog::log(&flow, "begin", &format!("provider={provider} proxy={}", if proxy_url.is_some() { "on" } else { "off" }));
     let mid = uuid::Uuid::new_v4().to_string();
     let (p_init, m_init) = (provider.clone(), mid.clone());
@@ -443,10 +480,12 @@ async fn oauth_begin(app: AppHandle, provider: String) -> Result<serde_json::Val
     {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
+            cancel_oauth_flow(&mut pending_oauth_guard(), Some(&flow));
             flowlog::log(&flow, "init-fail", &e);
             return Err(e);
         }
         Err(e) => {
+            cancel_oauth_flow(&mut pending_oauth_guard(), Some(&flow));
             let m = i18n::trf("err.oauth.flow", &[("e", &e.to_string())]);
             flowlog::log(&flow, "init-fail", &m);
             return Err(m);
@@ -472,16 +511,30 @@ async fn oauth_begin(app: AppHandle, provider: String) -> Result<serde_json::Val
         expires_at_ms: init.expires_at_ms,
         interval_ms: init.poll_interval_ms,
     };
-    *pending_oauth_guard() = Some(PendingOAuth {
-        provider: provider.clone(),
-        state: init.state.clone(),
-        flow: flow.clone(),
-    });
+    let _lock = store_guard();
+    {
+        let mut pending = pending_oauth_guard();
+        let Some(p) = pending.as_mut().filter(|p| p.flow == flow) else { return Err("__superseded__".into()); };
+        p.state = init.state.clone();
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+    let expires_at_ms = init.expires_at_ms.min(now + u128::from(oauth::FLOW_TIMEOUT_MS));
+    if browser {
+        if let Err(e) = store::open_url(&url) {
+            cancel_oauth_flow(&mut pending_oauth_guard(), Some(&flow));
+            return Err(e);
+        }
+        spawn_poll_loop(app.clone(), provider.clone(), flow.clone(), mid, poll_cfg);
+        return Ok(json!({ "opened": true, "method": "browser", "provider": provider, "flow": flow, "url": url, "expires_at_ms": expires_at_ms }));
+    }
 
     let login_root = app
         .path()
         .app_local_data_dir()
-        .map_err(|e| i18n::trf("err.oauth.appdata", &[("e", &e.to_string())]))?
+        .map_err(|e| {
+            cancel_oauth_flow(&mut pending_oauth_guard(), Some(&flow));
+            i18n::trf("err.oauth.appdata", &[("e", &e.to_string())])
+        })?
         .join("login-webview");
     sweep_login_profiles(&login_root);
     let profile_dir = login_root.join(&flow);
@@ -538,7 +591,7 @@ async fn oauth_begin(app: AppHandle, provider: String) -> Result<serde_json::Val
         });
     }
     spawn_poll_loop(app.clone(), provider.clone(), flow.clone(), mid, poll_cfg);
-    Ok(json!({ "opened": true, "provider": provider }))
+    Ok(json!({ "opened": true, "method": "in-app", "provider": provider, "flow": flow }))
 }
 
 fn sweep_login_profiles(root: &std::path::Path) {
@@ -644,7 +697,7 @@ async fn finish_oauth(app: &AppHandle, provider: String, state: String, flow: St
             return;
         }
     }
-    finalize_oauth_result(app, result);
+    finalize_oauth_result(app, &flow, result);
 }
 
 fn deeplink_err_soft(e: &str) -> bool {
@@ -700,18 +753,19 @@ fn persist_oauth_account(
         refresh_token.as_deref(),
     );
     let config = oauth::assemble_config(provider, &jwt, &access_token);
+    let hash = canonical_hash(&credentials);
 
     let _lock = store_guard();
     if !flow_still_ours() {
         return Err("__superseded__".into());
     }
     let accounts = list_accounts(paths)?;
-    let hash = canonical_hash(&credentials);
     if let Some(i) = store::find_same_login(&credentials, &hash, &accounts, &paths.home) {
         let mut dup = accounts[i].clone();
         dup.hash = hash.clone();
         dup.credentials = credentials;
         dup.config = Some(config);
+        dup.config_plaintext_fields.clear();
         dup.updated_at = now_ts();
         if dup.virtual_device_mid.as_deref().map_or(true, |m| m.trim().is_empty()) {
             dup.virtual_device_mid = Some(mid.to_string());
@@ -742,6 +796,7 @@ fn persist_oauth_account(
         hash,
         credentials,
         config: Some(config),
+        config_plaintext_fields: vec![],
         virtual_device_mid: Some(mid.to_string()),
         virtual_arms_uid: Some(store::new_arms_uid()),
     };
@@ -753,19 +808,26 @@ fn persist_oauth_account(
     Ok(json!({ "id": acc.id, "name": acc.name, "provider": provider }))
 }
 
-fn finalize_oauth_result(app: &AppHandle, result: Result<serde_json::Value, String>) {
+fn finalize_oauth_result(app: &AppHandle, flow: &str, result: Result<serde_json::Value, String>) {
     if let Err(e) = &result {
         if e == "__superseded__" || e == "__attribution__" {
             return;
         }
     }
+    let _lock = store_guard();
+    let mut pending = pending_oauth_guard();
+    if pending.as_ref().is_some_and(|p| p.flow != flow) { return; }
+    if pending.is_none() && result.is_err() { return; }
+    cancel_oauth_flow(&mut pending, Some(flow));
+    drop(pending);
     if let Some(w) = app.get_webview_window("login") {
         let _ = w.close();
     }
-    let payload = match result {
+    let mut payload = match result {
         Ok(v) => v,
         Err(e) => json!({ "ok": false, "error": e }),
     };
+    payload["flow"] = json!(flow);
     let _ = app.emit("oauth://done", &payload);
 }
 
@@ -784,7 +846,18 @@ fn spawn_poll_loop(app: AppHandle, provider: String, flow: String, mid: String, 
                 flowlog::log(&flow, "poll-exit", "flow-done-or-replaced");
                 return;
             }
-            match oauth::poll_flow_once(&cfg.url, &cfg.token, &mid) {
+            let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+            if now() >= deadline {
+                finalize_oauth_result(&app, &flow, Err(i18n::tr("err.oauth.expired")));
+                return;
+            }
+            let outcome = oauth::poll_flow_once(&cfg.url, &cfg.token, &mid);
+            if !ours() { return; }
+            if now() >= deadline {
+                finalize_oauth_result(&app, &flow, Err(i18n::tr("err.oauth.expired")));
+                return;
+            }
+            match outcome {
                 Ok(oauth::PollOutcome::Pending) => {}
                 Ok(oauth::PollOutcome::Ready(data)) => {
                     flowlog::log(&flow, "poll-ready", "");
@@ -801,7 +874,7 @@ fn spawn_poll_loop(app: AppHandle, provider: String, flow: String, mid: String, 
                         }
                         Err(_) => {}
                     }
-                    finalize_oauth_result(&app, result);
+                    finalize_oauth_result(&app, &flow, result);
                     return;
                 }
                 Err(e) => {
@@ -810,8 +883,7 @@ fn spawn_poll_loop(app: AppHandle, provider: String, flow: String, mid: String, 
                         return;
                     }
                     flowlog::log(&flow, "poll-fail", &e);
-                    *pending_oauth_guard() = None;
-                    finalize_oauth_result(&app, Err(e));
+                    finalize_oauth_result(&app, &flow, Err(e));
                     return;
                 }
             }
@@ -824,8 +896,7 @@ fn spawn_poll_loop(app: AppHandle, provider: String, flow: String, mid: String, 
                     return;
                 }
                 flowlog::log(&flow, "poll-timeout", "");
-                *pending_oauth_guard() = None;
-                finalize_oauth_result(&app, Err(i18n::tr("err.oauth.expired")));
+                finalize_oauth_result(&app, &flow, Err(i18n::tr("err.oauth.expired")));
                 return;
             }
             let sleep = (deadline - now).min(cfg.interval_ms as u128) as u64;
@@ -1194,6 +1265,8 @@ pub fn run() {
             set_auth_proxy,
             test_proxy_connection,
             get_magpie_diagnostics,
+            set_login_method,
+            oauth_cancel,
             kill_zcode,
             set_behavior,
             set_language,

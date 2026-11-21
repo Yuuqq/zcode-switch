@@ -119,8 +119,10 @@ export function openConfirmModal(m) {
   (m.focusNo || kind === "danger" ? no : yes).focus();
 }
 
+let dismissPasswordModal = null;
+
 export function openPwModal(m) {
-  document.querySelector(".pw-mask")?.remove();
+  dismissPasswordModal?.();
   const isExport = m.mode === "export" || m.mode === "exportAll";
   const title = m.mode === "export" ? t("pw.exportTitle", { name: esc(m.name) })
     : m.mode === "exportAll" ? t("pw.exportAllTitle", { count: m.count })
@@ -131,12 +133,19 @@ export function openPwModal(m) {
 
   const mask = document.createElement("div");
   mask.className = "pw-mask";
+  const passwordField = (id, label) => `<div class="pw-field">
+    <input class="pw-input" type="password" id="${id}" name="${id === "pw1" ? "password" : "password-confirmation"}"
+      aria-label="${label}" placeholder="${label}" autocomplete="${isExport ? "new-password" : "current-password"}" spellcheck="false" autocapitalize="off">
+    <button type="button" class="btn-ghost pw-toggle" id="${id}-toggle" aria-controls="${id}" aria-label="${t("pw.showPassword")}" aria-pressed="false">${t("pw.show")}</button>
+  </div>`;
+  const bundleName = isExport ? m.path.split(/[\\/]/).pop() : m.files.map(([name]) => name).join(", ");
   mask.innerHTML = `
-    <div class="pw-panel">
-      <div class="pw-title">${title}</div>
+    <div class="pw-panel" role="dialog" aria-modal="true" aria-labelledby="pw-title">
+      <div class="pw-title" id="pw-title">${title}</div>
       <div class="pw-sub">${sub}</div>
-      <input class="pw-input" type="password" id="pw1" placeholder="${isExport ? t("pw.setPw") : t("pw.pw")}" autocomplete="off">
-      ${isExport ? `<input class="pw-input" type="password" id="pw2" placeholder="${t("pw.pwAgain")}" autocomplete="off">` : ""}
+      <input class="pw-username" type="text" name="username" autocomplete="username" value="${esc(bundleName)}" readonly tabindex="-1" aria-hidden="true">
+      ${passwordField("pw1", isExport ? t("pw.setPw") : t("pw.pw"))}
+      ${isExport ? passwordField("pw2", t("pw.pwAgain")) : ""}
       <div class="pw-err"></div>
       <div class="pw-actions">
         <button class="btn-ghost pw-cancel">${t("common.cancel")}</button>
@@ -150,14 +159,45 @@ export function openPwModal(m) {
   const go = mask.querySelector(".pw-go");
   const input1 = mask.querySelector("#pw1");
   const input2 = mask.querySelector("#pw2");
+  const fields = [[input1, "#pw1-toggle"], [input2, "#pw2-toggle"]].filter(([input]) => input).map(([input, selector]) => {
+    const button = mask.querySelector(selector);
+    const setVisible = (visible) => {
+      input.type = visible ? "text" : "password";
+      button.setAttribute("aria-pressed", String(visible));
+      button.setAttribute("aria-label", t(visible ? "pw.hidePassword" : "pw.showPassword"));
+      button.textContent = t(visible ? "pw.hide" : "pw.show");
+    };
+    button.addEventListener("click", () => setVisible(input.type === "password"));
+    return { input, button, setVisible };
+  });
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    fields.forEach(({ input, setVisible }) => { setVisible(false); input.value = ""; });
+    if (dismissPasswordModal === close) dismissPasswordModal = null;
+    mask.remove();
+  };
+  dismissPasswordModal = close;
   panel.addEventListener("click", (e) => e.stopPropagation());
-  mask.addEventListener("click", () => mask.remove());
-  mask.querySelectorAll(".pw-cancel").forEach((b) => b.addEventListener("click", () => mask.remove()));
+  mask.addEventListener("click", close);
+  mask.querySelectorAll(".pw-cancel").forEach((b) => b.addEventListener("click", close));
   const key = (e) => {
-    if (e.key === "Escape") mask.remove();
-    if (e.key === "Enter") confirm();
+    if (e.key === "Escape") close();
+    if (e.key === "Enter") { e.preventDefault(); confirm(); }
   };
   [input1, input2].forEach((i) => i?.addEventListener("keydown", key));
+  mask.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") close();
+    if (e.key === "Tab") {
+      const controls = [...fields.flatMap(({ input, button }) => [input, button]), mask.querySelector(".pw-cancel"), go].filter((control) => !control.disabled);
+      const index = controls.indexOf(document.activeElement);
+      if (index < 0 || (e.shiftKey && index === 0) || (!e.shiftKey && index === controls.length - 1)) {
+        e.preventDefault();
+        controls[e.shiftKey ? controls.length - 1 : 0].focus();
+      }
+    }
+  });
   input1.focus();
 
   async function confirm() {
@@ -177,8 +217,8 @@ export function openPwModal(m) {
       } else if (m.mode === "exportAll") {
         const r = await invoke("export_all_finalize", { path: m.path, password: pw1 });
         if (r.skipped?.length) {
-          toast(t("pw.exportedAllSkipped", { count: r.count, skipped: r.skipped.length }), "warn",
-            [r.path, ...r.skipped.map((s) => `${s.name}: ${s.reason}`)].join("\n"));
+          close();
+          openExportReport(r);
         } else {
           toast(t("pw.exportedAllToast", { count: r.count }), "ok", r.path);
         }
@@ -198,13 +238,90 @@ export function openPwModal(m) {
         }
         m.onDone?.(report);
       }
-      mask.remove();
+      close();
     } catch (e) {
       errEl.textContent = stripErr(e);
       go.disabled = false;
     }
   }
   go.addEventListener("click", confirm);
+}
+
+export function exportReportText(report) {
+  return [
+    t("report.title"), t("report.count", { count: report.count }), t("report.path", { path: report.path }),
+    t("report.skipped", { count: report.skipped.length }),
+    ...report.skipped.map(({ name, reason }) => `${name}: ${reason}`),
+  ].join("\n");
+}
+
+let dismissExportReport = null;
+
+export function openExportReport(report) {
+  dismissExportReport?.();
+  const mask = document.createElement("div");
+  mask.className = "export-report-mask";
+  mask.innerHTML = `<div class="pw-panel export-report-panel" role="dialog" aria-modal="true" aria-labelledby="export-report-title">
+    <div class="pw-title" id="export-report-title">${t("report.title")}</div>
+    <div class="pw-sub export-report-summary">${esc(t("report.count", { count: report.count }))}<br>${esc(t("report.path", { path: report.path }))}</div>
+    <h3 id="export-report-skipped">${esc(t("report.skipped", { count: report.skipped.length }))}</h3>
+    <div class="export-report-results" tabindex="0" role="region" aria-labelledby="export-report-skipped"><table>
+      <thead><tr><th scope="col">${t("report.account")}</th><th scope="col">${t("report.reason")}</th></tr></thead>
+      <tbody>${report.skipped.map(({ name, reason }) => `<tr><td>${esc(name)}</td><td>${esc(reason)}</td></tr>`).join("")}</tbody>
+    </table></div>
+    <div class="export-report-status" role="status" aria-live="polite"></div>
+    <div class="pw-actions"><button type="button" class="btn-ghost export-report-copy">${t("report.copy")}</button>
+      <button type="button" class="btn-primary export-report-close">${t("report.close")}</button></div>
+  </div>`;
+  const copy = mask.querySelector(".export-report-copy");
+  const results = mask.querySelector(".export-report-results");
+  const previous = document.activeElement;
+  const closeButton = mask.querySelector(".export-report-close");
+  const status = mask.querySelector(".export-report-status");
+  const close = () => {
+    document.removeEventListener("keydown", key);
+    mask.remove();
+    if (dismissExportReport === close) dismissExportReport = null;
+    if (previous?.isConnected) previous.focus();
+  };
+  const key = (event) => {
+    if (event.key === "Escape") close();
+    if (event.key === "Tab") {
+      const buttons = [results, copy, closeButton].filter((el) => !el.disabled);
+      const index = buttons.indexOf(document.activeElement);
+      if (index < 0 || (event.shiftKey && index === 0) || (!event.shiftKey && index === buttons.length - 1)) {
+        event.preventDefault();
+        buttons[event.shiftKey ? buttons.length - 1 : 0].focus();
+      }
+    }
+  };
+  copy.addEventListener("click", async () => {
+    copy.disabled = true;
+    try {
+      const text = exportReportText(report);
+      if (globalThis.navigator?.clipboard?.writeText) await navigator.clipboard.writeText(text);
+      else {
+        const field = document.createElement("textarea");
+        field.value = text;
+        field.readOnly = true;
+        field.style.position = "fixed";
+        field.style.opacity = "0";
+        document.body.appendChild(field);
+        try {
+          field.select();
+          if (!document.execCommand?.("copy")) throw new Error("clipboard unavailable");
+        } finally { field.remove(); }
+      }
+      status.textContent = t("report.copied");
+    } catch {
+      status.textContent = t("report.copyFailed");
+    } finally { copy.disabled = false; copy.focus(); }
+  });
+  closeButton.addEventListener("click", close);
+  document.addEventListener("keydown", key);
+  dismissExportReport = close;
+  document.body.appendChild(mask);
+  copy.focus();
 }
 
 export function openProviderModal(m) {
