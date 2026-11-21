@@ -29,6 +29,12 @@ async function guard(fn) {
 }
 
 const actions = {
+  async setLoginMethod(method) {
+    await guard(async () => {
+      await invoke("set_login_method", { method });
+      await refresh(); render();
+    });
+  },
   async refresh() { await refresh(); render(); },
 
   async openGitHub() {
@@ -180,6 +186,13 @@ function render() {
       ${toggle(s.close_to_tray, "actions.toggleBehavior('tray')", t("s.closeTray"), t("s.closeTrayDesc"))}
       ${toggle(s.hot_switch, "actions.toggleBehavior('hot')", t("s.hotSwitch"), t("s.hotSwitchDesc"))}
       <label style="margin-top:14px">${t("s.authLabel")}</label>
+      <div class="tog-row">
+        <div class="tog-info"><div class="tog-label">${t("s.loginMethod")}</div><div class="hint">${t("s.loginMethodHint")}</div></div>
+        <div class="lang-seg" role="radiogroup" aria-label="${t("s.loginMethod")}">
+          <button class="lang-opt${s.login_method === "browser" ? " on" : ""}" role="radio" aria-checked="${s.login_method === "browser"}" click="actions.setLoginMethod('browser')">${t("s.loginBrowser")}</button>
+          <button class="lang-opt${s.login_method === "in-app" ? " on" : ""}" role="radio" aria-checked="${s.login_method === "in-app"}" click="actions.setLoginMethod('in-app')">${t("s.loginInApp")}</button>
+        </div>
+      </div>
       ${toggle(s.auth_proxy_on, "actions.toggleAuthProxy()", t("s.proxyToggle"), t("s.proxyToggleDesc"))}
       <div class="path-line" style="margin-top:6px">
         <input class="zcode-path auth-proxy" type="text" value="${esc(s.auth_proxy_url || "")}"

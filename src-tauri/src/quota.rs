@@ -297,7 +297,7 @@ fn looks_like_token(v: &str) -> bool {
     v.trim().len() > 20
 }
 
-fn coding_plan_api_keys(config: Option<&Value>) -> Vec<String> {
+fn coding_plan_api_keys(config: Option<&Value>, secret: &str) -> Vec<String> {
     let mut keys = vec![];
     let providers = match config.and_then(|c| c.get("provider")).and_then(|p| p.as_object()) {
         Some(p) => p,
@@ -309,9 +309,9 @@ fn coding_plan_api_keys(config: Option<&Value>) -> Vec<String> {
         if !id.contains("coding-plan") {
             continue;
         }
-        if let Some(k) = p.get("options").and_then(|o| o.get("apiKey")).and_then(|k| k.as_str()) {
-            if !k.starts_with("enc:") && looks_like_token(k) && !keys.contains(&k.to_string()) {
-                keys.push(k.to_string());
+        if let Some(k) = safe_decrypt(p.get("options").and_then(|o| o.get("apiKey")).and_then(|k| k.as_str()), secret) {
+            if looks_like_token(&k) && !keys.contains(&k) {
+                keys.push(k);
             }
         }
     }
@@ -345,7 +345,7 @@ pub fn candidate_tokens(creds: &Value, config: Option<&Value>, secret: &str, new
             add(Some(k.clone()), &mut tokens);
         }
     }
-    for k in coding_plan_api_keys(config) {
+    for k in coding_plan_api_keys(config, secret) {
         tokens.push(k);
     }
     let active = safe_decrypt(
@@ -566,9 +566,9 @@ pub(crate) fn zai_billing_token(creds: &Value, config: Option<&Value>, secret: &
     ordered.sort_by_key(|(_, p)| if p.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false) { 0 } else { 1 });
     for (id, p) in ordered {
         if id.contains("start-plan") {
-            if let Some(k) = p.get("options").and_then(|o| o.get("apiKey")).and_then(|k| k.as_str()) {
-                if !k.starts_with("enc:") && looks_like_token(k) {
-                    return Some(k.to_string());
+            if let Some(k) = safe_decrypt(p.get("options").and_then(|o| o.get("apiKey")).and_then(|k| k.as_str()), secret) {
+                if looks_like_token(&k) {
+                    return Some(k);
                 }
             }
         }
@@ -613,8 +613,8 @@ pub(crate) fn pick_channels(creds: &Value, config: Option<&Value>, secret: &str,
     let mut ordered: Vec<(&String, &Value)> = providers.iter().collect();
     ordered.sort_by_key(|(_, p)| if p.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false) { 0 } else { 1 });
     let provider_key = |p: &Value| -> Option<String> {
-        let k = p.get("options").and_then(|o| o.get("apiKey")).and_then(|k| k.as_str())?;
-        (!k.starts_with("enc:") && looks_like_token(k)).then(|| k.to_string())
+        let k = safe_decrypt(p.get("options").and_then(|o| o.get("apiKey")).and_then(|k| k.as_str()), secret)?;
+        looks_like_token(&k).then_some(k)
     };
     for (id, p) in ordered {
         let key = provider_key(p);

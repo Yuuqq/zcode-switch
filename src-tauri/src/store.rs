@@ -139,12 +139,17 @@ pub struct Settings {
     #[serde(default)]
     pub auth_proxy_url: Option<String>,
     #[serde(default)]
+    pub login_method: Option<String>,
+    #[serde(default)]
     pub language: Option<String>,
     #[serde(default)]
     pub auto_claim: Option<bool>,
 }
 
 impl Settings {
+    pub fn login_method(&self) -> &str {
+        if self.login_method.as_deref() == Some("in-app") { "in-app" } else { "browser" }
+    }
     pub fn launch_after_switch(&self) -> bool { self.launch_after_switch.unwrap_or(true) }
     pub fn close_to_tray(&self) -> bool { self.close_to_tray.unwrap_or(true) }
     pub fn hot_switch(&self) -> bool { self.hot_switch.unwrap_or(false) }
@@ -188,6 +193,7 @@ pub struct AppState {
     pub hot_switch: bool,
     pub auto_claim: bool,
     pub auth_proxy_on: bool,
+    pub login_method: String,
     pub auth_proxy_url: Option<String>,
     pub language: String,
 }
@@ -299,7 +305,8 @@ pub fn write_live(paths: &Paths, v: &Value) -> Result<(), String> {
 }
 
 pub fn write_live_config(paths: &Paths, v: &Value) -> Result<(), String> {
-    let body = serde_json::to_string_pretty(v).unwrap_or_default() + "\n";
+    let v = zcrypto::decrypt_value(v, &zcrypto::default_secret(&paths.home))?;
+    let body = serde_json::to_string_pretty(&v).unwrap_or_default() + "\n";
     atomic_write(&paths.live_config(), &body)
 }
 
@@ -430,7 +437,7 @@ pub fn open_url(url: &str) -> Result<(), String> {
         c.arg(url);
         c
     };
-    let _ = detached(cmd).spawn();
+    detached(cmd).spawn().map_err(|e| trf("err.oauth.browser", &[("e", &e.to_string())]))?;
     Ok(())
 }
 
@@ -529,8 +536,12 @@ pub fn list_accounts(paths: &Paths) -> Result<Vec<Account>, String> {
 
 pub fn save_account(paths: &Paths, acc: &Account) -> Result<(), String> {
     paths.ensure_dirs()?;
+    let mut acc = acc.clone();
+    let mut config = acc.config.take().unwrap_or(Value::Null);
+    crate::oauth::encrypt_login_snapshot(&mut acc.credentials, &mut config, &zcrypto::default_secret(&paths.home))?;
+    acc.config = (!config.is_null()).then_some(config);
     let path = paths.accounts_dir().join(format!("{}.json", acc.id));
-    let body = serde_json::to_string_pretty(acc).unwrap_or_default() + "\n";
+    let body = serde_json::to_string_pretty(&acc).unwrap_or_default() + "\n";
     atomic_write(&path, &body)
 }
 
@@ -607,6 +618,15 @@ pub fn capture_current(paths: &Paths, name: Option<String>) -> Result<Account, S
 pub(crate) fn find_same_login(live: &Value, live_hash: &str, accounts: &[Account], home: &Path) -> Option<usize> {
     if let Some(i) = accounts.iter().position(|a| a.hash == live_hash) {
         return Some(i);
+    }
+    let secret = zcrypto::default_secret(home);
+    if let Ok(plain) = zcrypto::decrypt_value(live, &secret) {
+        let hash = canonical_hash(&plain);
+        if let Some(i) = accounts.iter().position(|a| {
+            zcrypto::decrypt_value(&a.credentials, &secret).is_ok_and(|plain| canonical_hash(&plain) == hash)
+        }) {
+            return Some(i);
+        }
     }
     let live_id = zcrypto::account_identity(live, home);
     if !identity_has_signal(&live_id) {
@@ -1434,6 +1454,7 @@ pub fn get_state(paths: &Paths) -> Result<AppState, String> {
         hot_switch: settings.hot_switch(),
         auto_claim: settings.auto_claim(),
         auth_proxy_on: settings.auth_proxy_on.unwrap_or(false),
+        login_method: settings.login_method().to_string(),
         auth_proxy_url: settings.auth_proxy_url.clone(),
         language: crate::i18n::current().as_str().to_string(),
     })

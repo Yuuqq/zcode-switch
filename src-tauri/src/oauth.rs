@@ -457,6 +457,33 @@ pub fn assemble_credentials_with_token(
     Value::Object(m)
 }
 
+pub(crate) fn encrypt_login_snapshot(credentials: &mut Value, config: &mut Value, secret: &str) -> Result<(), String> {
+    fn encrypt(value: &mut Value, secret: &str) -> Result<(), String> {
+        if let Some(s) = value.as_str().filter(|s| !s.is_empty() && !crate::zcrypto::is_encrypted(s)) {
+            *value = Value::String(crate::zcrypto::encrypt_with_secret(s, secret)?);
+        }
+        Ok(())
+    }
+    fn encrypt_keys(value: &mut Value, secret: &str) -> Result<(), String> {
+        match value {
+            Value::Object(map) => for (key, value) in map {
+                if key == "apiKey" { encrypt(value, secret)?; } else { encrypt_keys(value, secret)?; }
+            },
+            Value::Array(items) => for item in items { encrypt_keys(item, secret)?; },
+            _ => {}
+        }
+        Ok(())
+    }
+    if let Some(map) = credentials.as_object_mut() {
+        for (key, value) in map {
+            if key == "zcodejwttoken" || (key.starts_with("oauth:") && (key.ends_with(":access_token") || key.ends_with(":refresh_token"))) {
+                encrypt(value, secret)?;
+            }
+        }
+    }
+    encrypt_keys(config, secret)
+}
+
 pub const BIGMODEL_BIZ_BASE: &str = "https://bigmodel.cn";
 pub const ZAI_API_BASE: &str = "https://api.z.ai";
 pub const ZAI_BUSINESS_LOGIN_URL: &str = "https://api.z.ai/api/auth/z/login";

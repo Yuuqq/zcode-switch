@@ -441,6 +441,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn encrypted_login_tokens_and_config_remain_usable() {
+        let jwt = "login-jwt-longer-than-twenty-characters";
+        let mut credentials = serde_json::json!({"zcodejwttoken": jwt});
+        let mut config = serde_json::json!({"provider": {"builtin:zai-start-plan": {"options": {"apiKey": jwt}}}});
+        crate::oauth::encrypt_login_snapshot(&mut credentials, &mut config, "login-test").unwrap();
+        assert_eq!(claim_token(&credentials, Some(&config), "login-test").unwrap(), jwt);
+        assert_eq!(claim_token(&serde_json::json!({}), Some(&config), "login-test").unwrap(), jwt);
+        assert!(claim_token(&credentials, Some(&config), "wrong-key").is_err());
+        assert!(claim_token(&serde_json::json!({}), None, "login-test").is_err());
+    }
+
+    #[test]
     fn only_network_and_server_errors_are_retryable() {
         for status in [400, 401, 403, 404, 429, 500, 502, 503, 504] {
             let error = ureq::Error::Status(status, ureq::Response::new(status, "test", "{}").unwrap());
