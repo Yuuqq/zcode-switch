@@ -176,7 +176,12 @@ export function openPwModal(m) {
         m.onDone?.(r);
       } else if (m.mode === "exportAll") {
         const r = await invoke("export_all_finalize", { path: m.path, password: pw1 });
-        toast(t("pw.exportedAllToast", { count: r.count }), "ok", r.path);
+        if (r.skipped?.length) {
+          toast(t("pw.exportedAllSkipped", { count: r.count, skipped: r.skipped.length }), "warn",
+            [r.path, ...r.skipped.map((s) => `${s.name}: ${s.reason}`)].join("\n"));
+        } else {
+          toast(t("pw.exportedAllToast", { count: r.count }), "ok", r.path);
+        }
         m.onDone?.(r);
       } else {
         let report = await invoke("import_sealed", { files: m.files, password: pw1 });

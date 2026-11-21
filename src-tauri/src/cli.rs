@@ -250,15 +250,17 @@ pub fn run(args: &[String]) -> (String, i32) {
             let Some(password) = resolve_password(rest) else {
                 return (err(&crate::i18n::tr("cli.pw_hint")), 2);
             };
-            match list_accounts(&paths).and_then(|a| export_bundle_value(&paths, &a)) {
-                Ok(payload) => match crate::cipher::seal(&payload, &password, crate::cipher::FORMAT_BUNDLE) {
-                    Ok(sealed) => match atomic_write(std::path::Path::new(&out_path), &(serde_json::to_string_pretty(&sealed).unwrap() + "\n")) {
-                        Ok(()) => ok(json!({ "out": out_path, "encrypted": true })),
-                        Err(e) => return (err(&crate::i18n::trf("err.write", &[("e", &e)])), 1),
-                    },
-                    Err(e) => return (err(&e), 1),
-                },
-                Err(e) => return (err(&e), 1),
+            match list_accounts(&paths).and_then(|a| export_all_to_file(&paths, &a, &password, std::path::Path::new(&out_path))) {
+                Ok(report) => {
+                    for skipped in &report.skipped {
+                        eprintln!("{}: {}", skipped.name, skipped.reason);
+                    }
+                    ok(json!({ "out": out_path, "encrypted": true, "count": report.count, "skipped": report.skipped }))
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    return (err(&e), 1);
+                }
             }
         }
         "import" => {

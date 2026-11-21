@@ -49,7 +49,7 @@ fn decrypt_fields(
                     encrypted.push(pointer.to_string());
                 }
                 Err(_) if legacy => *unreadable = true,
-                Err(_) => return Err(tr("err.bundle.decrypt_local")),
+                Err(_) => return Err(trf("err.bundle.decrypt_local", &[("path", pointer)])),
             }
         }
         Value::Object(map) => {
@@ -87,7 +87,28 @@ pub fn export_bundle_value(paths: &Paths, accounts: &[Account]) -> Result<Value,
 }
 
 fn export_with_secret(accounts: &[Account], secret: &str) -> Result<Value, String> {
+    Ok(export_accounts(accounts, secret, false)?.0)
+}
+
+#[derive(serde::Serialize, Debug)]
+pub struct ExportSkipped {
+    pub name: String,
+    pub reason: String,
+}
+
+#[derive(serde::Serialize, Debug)]
+pub struct ExportReport {
+    pub count: usize,
+    pub skipped: Vec<ExportSkipped>,
+}
+
+fn export_accounts(
+    accounts: &[Account],
+    secret: &str,
+    skip_unreadable: bool,
+) -> Result<(Value, Vec<ExportSkipped>), String> {
     let mut entries = Vec::with_capacity(accounts.len());
+    let mut skipped = vec![];
     for account in accounts {
         let mut entry = json!({
             "name": account.name,
@@ -96,16 +117,55 @@ fn export_with_secret(accounts: &[Account], secret: &str) -> Result<Value, Strin
             "config": account.config,
         });
         let mut encrypted = vec![];
-        decrypt_entry(&mut entry, secret, false, &mut encrypted, &mut false)?;
+        if let Err(e) = decrypt_entry(&mut entry, secret, false, &mut encrypted, &mut false) {
+            let reason = trf(
+                "err.bundle.export_account",
+                &[("name", &account.name), ("e", &e)],
+            );
+            if !skip_unreadable {
+                return Err(reason);
+            }
+            skipped.push(ExportSkipped {
+                name: account.name.clone(),
+                reason,
+            });
+            continue;
+        }
         entry["encryptedFields"] = json!(encrypted);
         entries.push(entry);
     }
-    Ok(json!({
-        "format": "zcode-accounts-bundle",
-        "version": PAYLOAD_VERSION,
-        "exportedAt": now_ts(),
-        "accounts": entries,
-    }))
+    if skip_unreadable && entries.is_empty() {
+        let reasons = skipped
+            .iter()
+            .map(|s| s.reason.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(trf("err.bundle.export_none", &[("reasons", &reasons)]));
+    }
+    Ok((
+        json!({
+            "format": "zcode-accounts-bundle",
+            "version": PAYLOAD_VERSION,
+            "exportedAt": now_ts(),
+            "accounts": entries,
+        }),
+        skipped,
+    ))
+}
+
+pub fn export_all_to_file(
+    paths: &Paths,
+    accounts: &[Account],
+    password: &str,
+    path: &Path,
+) -> Result<ExportReport, String> {
+    let (payload, skipped) =
+        export_accounts(accounts, &zcrypto::default_secret(&paths.home), true)?;
+    let count = payload["accounts"].as_array().unwrap().len();
+    let sealed = crate::cipher::seal(&payload, password, crate::cipher::FORMAT_BUNDLE)?;
+    let body = serde_json::to_string_pretty(&sealed).map_err(|e| e.to_string())? + "\n";
+    crate::store::atomic_write(path, &body)?;
+    Ok(ExportReport { count, skipped })
 }
 
 fn plaintext_hash(credentials: &Value, secret: &str) -> String {
@@ -485,10 +545,103 @@ mod tests {
     #[test]
     fn export_rejects_unreadable_inner_ciphertext() {
         let original = account("Unreadable", "enc:v1:invalid");
+        let error = export_with_secret(&[original], "key").unwrap_err();
+        assert!(error.contains("Unreadable"));
+        assert!(error.contains("/credentials/zcodejwttoken"));
+        assert!(error.contains("ZCODE_CREDENTIAL_SECRET"));
+        assert!(!error.contains("enc:v1:invalid"));
+    }
+
+    #[test]
+    fn single_export_names_account_and_config_path_without_values() {
+        let token = zcrypto::encrypt_with_secret("private-token", "local").unwrap();
+        let foreign = zcrypto::encrypt_with_secret("private-key", "foreign").unwrap();
+        let mut original = account("Saved config account", &token);
+        original.config = Some(json!({"providers": [{"apiKey": foreign}]}));
+        let error = export_with_secret(&[original], "local").unwrap_err();
+        assert!(error.contains("Saved config account"));
+        assert!(error.contains("/config/providers/0/apiKey"));
+        assert!(error.contains("ZCODE_CREDENTIAL_SECRET"));
+        for value in [
+            token.as_str(),
+            foreign.as_str(),
+            "private-key",
+            "private-token",
+        ] {
+            assert!(!error.contains(value));
+        }
+    }
+
+    #[test]
+    fn export_all_skips_whole_accounts_and_writes_only_portable_content() {
+        let store = TestStore::new();
+        let secret = zcrypto::default_secret(&store.0.home);
+        let token = zcrypto::encrypt_with_secret("local-token", &secret).unwrap();
+        let foreign = zcrypto::encrypt_with_secret("foreign-token", "different-secret").unwrap();
+        let mut good = account("Good", &token);
+        good.config = Some(json!({"apiKey": token, "language": "zh"}));
+        let bad_credentials = account("Bad credentials", &foreign);
+        let mut bad_config = account("Bad config", &token);
+        bad_config.config = Some(json!({"oldKey": foreign}));
+        let path = store.0.home.join("mixed.zsb");
+        let report = export_all_to_file(
+            &store.0,
+            &[bad_credentials, good, bad_config],
+            "password",
+            &path,
+        )
+        .unwrap();
+        assert_eq!(report.count, 1);
+        assert_eq!(report.skipped.len(), 2);
+        assert_eq!(report.skipped[0].name, "Bad credentials");
+        assert!(report.skipped[0]
+            .reason
+            .contains("/credentials/zcodejwttoken"));
+        assert_eq!(report.skipped[1].name, "Bad config");
+        assert!(report.skipped[1].reason.contains("/config/oldKey"));
+        let envelope = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        let payload = cipher::open(&envelope, "password").unwrap();
+        assert_eq!(payload["version"], 3);
+        assert_eq!(payload["accounts"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["accounts"][0]["name"], "Good");
         assert_eq!(
-            export_with_secret(&[original], "key").unwrap_err(),
-            tr("err.bundle.decrypt_local")
+            payload["accounts"][0]["config"],
+            json!({"apiKey": "local-token", "language": "zh"})
         );
+        assert!(!payload.to_string().contains("enc:v1:"));
+        assert!(!payload.to_string().contains("foreign-token"));
+    }
+
+    #[test]
+    fn export_all_all_skipped_or_empty_never_writes_a_file() {
+        let store = TestStore::new();
+        let foreign = zcrypto::encrypt_with_secret("private", "different-secret").unwrap();
+        let accounts = [account("Foreign", &foreign)];
+        let path = store.0.home.join("all-skipped.zsb");
+        let error = export_all_to_file(&store.0, &accounts, "password", &path).unwrap_err();
+        assert!(error.contains("Foreign"));
+        assert!(error.contains("ZCODE_CREDENTIAL_SECRET"));
+        assert!(!error.contains(&foreign));
+        assert!(!path.exists());
+        assert!(!store.0.home.exists());
+        assert!(export_all_to_file(&store.0, &[], "password", &path).is_err());
+        assert!(!path.exists());
+        fs::create_dir_all(&store.0.home).unwrap();
+        fs::write(&path, "existing backup").unwrap();
+        assert!(export_all_to_file(&store.0, &accounts, "password", &path).is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), "existing backup");
+    }
+
+    #[test]
+    fn export_all_without_skips_and_invalid_password() {
+        let store = TestStore::new();
+        let accounts = [account("Plain", "token")];
+        let path = store.0.home.join("plain.zsb");
+        assert!(export_all_to_file(&store.0, &accounts, "short", &path).is_err());
+        assert!(!path.exists());
+        let report = export_all_to_file(&store.0, &accounts, "password", &path).unwrap();
+        assert_eq!(report.count, 1);
+        assert!(report.skipped.is_empty());
     }
 
     #[test]

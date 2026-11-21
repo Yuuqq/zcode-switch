@@ -30,6 +30,7 @@ export const en = {
   "pw.exportedToast": "Encrypted export saved to {path}",
   "pw.exportedToastDetail": "Credential bundle + password encryption (remember it); the .zsb can be imported on any machine",
   "pw.exportedAllToast": "Encrypted export of {count} accounts",
+  "pw.exportedAllSkipped": "Exported {count} accounts; skipped {skipped} accounts that could not be decrypted",
 
   "prov.title": "Add account · Choose sign-in method",
   "prov.sub": "Sign in yourself in the popup (email/phone or QR code).<br>The account is saved automatically when done, <b>without touching your current login</b>",
