@@ -764,7 +764,7 @@ input:focus-visible,
 }
 .pg-exp { margin-left: auto; flex: none; font-family: var(--mono); font-size: 11.5px; color: var(--ink-mute); white-space: nowrap; }
 
-.pw-mask {
+.pw-mask, .export-report-mask {
   position: fixed;
   inset: 0;
   background: rgba(10, 11, 14, .72);
@@ -797,6 +797,18 @@ input:focus-visible,
   margin-bottom: 9px;
 }
 .pw-input:focus { outline: none; border-color: var(--amber-deep); }
+.pw-field { display: flex; gap: 6px; margin-bottom: 9px; }
+.pw-field .pw-input { min-width: 0; flex: 1; margin-bottom: 0; }
+.pw-toggle { flex: none; }
+.pw-username { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden; }
+.export-report-panel { width: 700px; max-height: 90vh; overflow-y: auto; }
+.export-report-summary, .export-report-results { user-select: text; }
+.export-report-panel h3 { font-size: 14px; margin-bottom: 8px; color: var(--amber); }
+.export-report-results { max-height: 45vh; overflow-y: auto; }
+.export-report-results table { border-collapse: collapse; table-layout: fixed; width: 100%; font-size: 13px; }
+.export-report-results th, .export-report-results td { text-align: left; vertical-align: top; padding: 8px; border-bottom: 1px solid var(--hairline); overflow-wrap: anywhere; }
+.export-report-results th:first-child { width: 28%; }
+.export-report-status { min-height: 20px; margin: 10px 0; font-size: 13px; color: var(--amber); }
 .pw-err { font-size: 14px; color: var(--red); min-height: 16px; margin-bottom: 6px; }
 .pw-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .pw-actions .pw-go { flex: none; padding: 8px 18px; }
