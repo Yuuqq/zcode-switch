@@ -1035,11 +1035,8 @@ async fn export_all_finalize(path: String, password: String) -> Result<serde_jso
     if accounts.is_empty() {
         return Err(i18n::tr("err.export.empty_short"));
     }
-    let payload = store::export_bundle_value(&Paths::detect(), &accounts)?;
-    let sealed = cipher::seal(&payload, &password, cipher::FORMAT_BUNDLE)?;
-    let body = serde_json::to_string_pretty(&sealed).unwrap() + "\n";
-    store::atomic_write(std::path::Path::new(&path), &body).map_err(|e| i18n::trf("err.write", &[("e", &e.to_string())]))?;
-    Ok(json!({ "saved": true, "path": path, "count": accounts.len() }))
+    let report = store::export_all_to_file(&Paths::detect(), &accounts, &password, std::path::Path::new(&path))?;
+    Ok(json!({ "saved": true, "path": path, "count": report.count, "skipped": report.skipped }))
 }
 
 #[tauri::command]

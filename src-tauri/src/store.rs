@@ -1388,7 +1388,7 @@ fn adopt_virtual_arms_uid(paths: &Paths, acc: &mut Account) -> Result<(), String
     save_account(paths, acc)
 }
 
-pub use crate::transfer::{export_bundle_value, import_values};
+pub use crate::transfer::{export_all_to_file, export_bundle_value, import_values};
 
 pub fn get_state(paths: &Paths) -> Result<AppState, String> {
     let accounts = list_accounts(paths)?;

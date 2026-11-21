@@ -30,6 +30,7 @@ export const zh = {
   "pw.exportedToast": "已加密导出到 {path}",
   "pw.exportedToastDetail": "凭据捆包 + 口令加密（记得密码）；.zsb 可在任意一台机器导入",
   "pw.exportedAllToast": "已加密导出 {count} 个账号",
+  "pw.exportedAllSkipped": "已导出 {count} 个账号；跳过 {skipped} 个无法解密的账号",
 
   "prov.title": "添加账号 · 选择登录方式",
   "prov.sub": "在弹出的窗口里自行登录（账号密码 / 扫码），<br>登录完成后自动存入账号库，<b>不影响当前正在使用的登录</b>",
