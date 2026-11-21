@@ -763,6 +763,7 @@ fn persist_oauth_account(
         dup.hash = hash.clone();
         dup.credentials = credentials;
         dup.config = Some(config);
+        dup.config_plaintext_fields.clear();
         dup.updated_at = now_ts();
         if dup.virtual_device_mid.as_deref().map_or(true, |m| m.trim().is_empty()) {
             dup.virtual_device_mid = Some(mid.to_string());
@@ -793,6 +794,7 @@ fn persist_oauth_account(
         hash,
         credentials,
         config: Some(config),
+        config_plaintext_fields: vec![],
         virtual_device_mid: Some(mid.to_string()),
         virtual_arms_uid: Some(store::new_arms_uid()),
     };

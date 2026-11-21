@@ -45,7 +45,7 @@ fn saved_login_snapshot_encrypts_secrets_and_all_local_readers_work() {
         "builtin:bigmodel-coding-plan": {"enabled": true, "options": {"apiKey": KEY}},
         "builtin:bigmodel-start-plan": {"enabled": true, "options": {"apiKey": JWT}}
     }});
-    let account = Account { id: "login-test".into(), name: "Login user".into(), created_at: now_ts(), updated_at: now_ts(), hash: canonical_hash(&plain), credentials: plain.clone(), config: Some(config.clone()), virtual_device_mid: None, virtual_arms_uid: None };
+    let account = Account { id: "login-test".into(), name: "Login user".into(), created_at: now_ts(), updated_at: now_ts(), hash: canonical_hash(&plain), credentials: plain.clone(), config: Some(config.clone()), config_plaintext_fields: vec![], virtual_device_mid: None, virtual_arms_uid: None };
     save_account(&paths, &account).unwrap();
     let saved = load_account(&paths, &account.id).unwrap();
     for key in ["zcodejwttoken", "oauth:bigmodel:access_token", "oauth:bigmodel:refresh_token"] {
@@ -68,10 +68,13 @@ fn saved_login_snapshot_encrypts_secrets_and_all_local_readers_work() {
     }
     assert_eq!(quota::zai_billing_token(&json!({"oauth:active_provider":"bigmodel"}), saved.config.as_ref(), &secret).as_deref(), Some(JWT));
     write_live(&paths, &saved.credentials).unwrap();
-    write_live_config(&paths, saved.config.as_ref().unwrap()).unwrap();
+    write_account_config(&paths, &saved).unwrap();
     assert_eq!(zcrypto::decrypt_value(&read_live(&paths).unwrap().unwrap(), &secret).unwrap(), plain);
     assert_eq!(read_live_config(&paths).unwrap(), config);
-    assert!(write_live_config(&paths, &json!({"apiKey":"enc:v1:broken"})).is_err());
+    let mut broken = saved.clone();
+    broken.config = Some(json!({"apiKey":"enc:v1:broken"}));
+    broken.config_plaintext_fields = vec!["/apiKey".into()];
+    assert!(write_account_config(&paths, &broken).is_err());
     assert_eq!(read_live_config(&paths).unwrap(), config);
     let bundle = transfer::export_bundle_value(&paths, &[saved]).unwrap();
     assert_eq!(bundle["accounts"][0]["credentials"], plain);
@@ -112,4 +115,78 @@ fn actual_login_persistence_encrypts_and_updates_plaintext_or_encrypted_identity
     assert_eq!(list_accounts(&paths).unwrap().len(), 1);
     assert!(load_account(&paths, id).unwrap().credentials["zcodejwttoken"].as_str().unwrap().starts_with(zcrypto::PREFIX));
     assert_eq!(persist_oauth_account(&paths, "bigmodel", &raw, "cancelled-flow", "mid", true).unwrap_err(), "__superseded__");
+}
+
+#[test]
+fn config_origin_survives_capture_save_restore_and_portable_import() {
+    let source = Fixture::new();
+    let paths = source.paths();
+    let secret = zcrypto::default_secret(&paths.home);
+    let native = zcrypto::encrypt_with_secret("native-key", &secret).unwrap();
+    let config = json!({
+        "provider": {
+            "plaintext/~provider": {"options": {"apiKey": KEY}},
+            "native": {"options": {"apiKey": native, "otherEncrypted": native}},
+        },
+        "array": [{"apiKey": "plain-array-key"}],
+        "empty": {"apiKey": ""},
+    });
+    write_live(&paths, &credentials()).unwrap();
+    write_live_config(&paths, &config).unwrap();
+    let captured = store::capture_current(&paths, Some("Origin test".into())).unwrap();
+    let mut saved = load_account(&paths, &captured.id).unwrap();
+    assert_eq!(saved.config_plaintext_fields, vec!["/array/0/apiKey", "/provider/plaintext~1~0provider/options/apiKey"]);
+    assert_eq!(saved.config.as_ref().unwrap()["provider"]["native"]["options"]["apiKey"], native);
+    write_account_config(&paths, &saved).unwrap();
+    assert_eq!(read_live_config(&paths).unwrap(), config);
+    save_account(&paths, &saved).unwrap();
+    saved = load_account(&paths, &saved.id).unwrap();
+    assert_eq!(saved.config_plaintext_fields.len(), 2);
+    write_account_config(&paths, &saved).unwrap();
+    assert_eq!(read_live_config(&paths).unwrap(), config);
+
+    let destination = Fixture::new();
+    let dest = destination.paths();
+    let bundle = transfer::export_bundle_value(&paths, &[saved.clone()]).unwrap();
+    let report = transfer::import_values(&dest, &[("origin.zsb".into(), bundle.clone())]).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let imported = list_accounts(&dest).unwrap().remove(0);
+    assert_eq!(imported.config_plaintext_fields, saved.config_plaintext_fields);
+    write_account_config(&dest, &imported).unwrap();
+    let restored = read_live_config(&dest).unwrap();
+    assert_eq!(restored["provider"]["plaintext/~provider"]["options"]["apiKey"], KEY);
+    assert_eq!(restored["array"][0]["apiKey"], "plain-array-key");
+    let imported_native = restored["provider"]["native"]["options"]["apiKey"].as_str().unwrap();
+    assert!(zcrypto::is_encrypted(imported_native));
+    assert_eq!(zcrypto::decrypt_with_secret(imported_native, &zcrypto::default_secret(&dest.home)).unwrap(), "native-key");
+
+    let mut invalid = bundle;
+    invalid["accounts"][0]["configPlaintextFields"] = json!(["/empty/apiKey"]);
+    let invalid_dest = Fixture::new();
+    let report = transfer::import_values(&invalid_dest.paths(), &[("invalid.zsb".into(), invalid)]).unwrap();
+    assert!(!report.errors.is_empty());
+    assert!(list_accounts(&invalid_dest.paths()).unwrap().is_empty());
+
+    let legacy_plain = json!({"apiKey": KEY});
+    let legacy_encrypted = json!({"apiKey": native, "opaque": "enc:v1:unknown-native-value"});
+    let mut legacy_json = serde_json::to_value(&saved).unwrap();
+    legacy_json.as_object_mut().unwrap().remove("config_plaintext_fields");
+    for legacy_config in [legacy_plain, legacy_encrypted] {
+        legacy_json["config"] = legacy_config.clone();
+        let legacy: Account = serde_json::from_value(legacy_json.clone()).unwrap();
+        write_account_config(&paths, &legacy).unwrap();
+        assert_eq!(read_live_config(&paths).unwrap(), legacy_config);
+        save_account(&paths, &legacy).unwrap();
+        write_account_config(&paths, &load_account(&paths, &legacy.id).unwrap()).unwrap();
+        assert_eq!(read_live_config(&paths).unwrap(), legacy_config);
+    }
+
+    let captured_cipher = zcrypto::encrypt_with_secret("changed-native-key", &secret).unwrap();
+    let changed_live = json!({"apiKey": captured_cipher});
+    write_live_config(&paths, &changed_live).unwrap();
+    store::update_account_from_live(&paths, &saved.id).unwrap();
+    let updated = load_account(&paths, &saved.id).unwrap();
+    assert!(updated.config_plaintext_fields.is_empty());
+    write_account_config(&paths, &updated).unwrap();
+    assert_eq!(read_live_config(&paths).unwrap(), changed_live);
 }

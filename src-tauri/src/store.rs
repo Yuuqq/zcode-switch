@@ -121,6 +121,8 @@ pub struct Account {
     pub credentials: Value,
     #[serde(default)]
     pub config: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_plaintext_fields: Vec<String>,
     #[serde(default)]
     pub virtual_device_mid: Option<String>,
     #[serde(default)]
@@ -305,9 +307,19 @@ pub fn write_live(paths: &Paths, v: &Value) -> Result<(), String> {
 }
 
 pub fn write_live_config(paths: &Paths, v: &Value) -> Result<(), String> {
-    let v = zcrypto::decrypt_value(v, &zcrypto::default_secret(&paths.home))?;
-    let body = serde_json::to_string_pretty(&v).unwrap_or_default() + "\n";
+    let body = serde_json::to_string_pretty(v).unwrap_or_default() + "\n";
     atomic_write(&paths.live_config(), &body)
+}
+
+pub(crate) fn write_account_config(paths: &Paths, account: &Account) -> Result<(), String> {
+    let Some(mut config) = account.config.clone() else { return Ok(()); };
+    let secret = zcrypto::default_secret(&paths.home);
+    for pointer in &account.config_plaintext_fields {
+        let field = config.pointer_mut(pointer).ok_or_else(|| tr("err.bundle.fields"))?;
+        let encrypted = field.as_str().ok_or_else(|| tr("err.bundle.fields"))?;
+        *field = Value::String(zcrypto::decrypt_with_secret(encrypted, &secret)?);
+    }
+    write_live_config(paths, &config)
 }
 
 pub(crate) fn in_sandbox() -> bool {
@@ -538,7 +550,9 @@ pub fn save_account(paths: &Paths, acc: &Account) -> Result<(), String> {
     paths.ensure_dirs()?;
     let mut acc = acc.clone();
     let mut config = acc.config.take().unwrap_or(Value::Null);
-    crate::oauth::encrypt_login_snapshot(&mut acc.credentials, &mut config, &zcrypto::default_secret(&paths.home))?;
+    acc.config_plaintext_fields.retain(|p| config.pointer(p).and_then(Value::as_str).is_some_and(zcrypto::is_encrypted));
+    let fields = crate::oauth::encrypt_login_snapshot(&mut acc.credentials, &mut config, &zcrypto::default_secret(&paths.home))?;
+    acc.config_plaintext_fields.extend(fields);
     acc.config = (!config.is_null()).then_some(config);
     let path = paths.accounts_dir().join(format!("{}.json", acc.id));
     let body = serde_json::to_string_pretty(&acc).unwrap_or_default() + "\n";
@@ -607,6 +621,7 @@ pub fn capture_current(paths: &Paths, name: Option<String>) -> Result<Account, S
         hash,
         credentials: live,
         config,
+        config_plaintext_fields: vec![],
         virtual_device_mid: None,
         virtual_arms_uid: None,
     };
@@ -659,6 +674,7 @@ fn auto_preserve(paths: &Paths, accounts: &[Account], target_hash: &str) -> Resu
         hash,
         credentials: live,
         config: snapshot_config_from_live(paths),
+        config_plaintext_fields: vec![],
         virtual_device_mid: None,
         virtual_arms_uid: None,
     };
@@ -708,6 +724,7 @@ fn sync_live_back_to_source(paths: &Paths, accounts: &[Account]) -> Result<(), S
         let cfg = read_live_config(paths);
         if cfg.is_some() && cfg != src.config {
             src.config = cfg;
+            src.config_plaintext_fields.clear();
             changed = true;
         }
     }
@@ -931,9 +948,9 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
             crate::quota::zcode_app_version()
         );
     }
-    if let Some(cfg) = &target.config {
+    if target.config.is_some() {
         if !new_gen {
-            write_live_config(paths, cfg)?;
+            write_account_config(paths, &target)?;
         }
     }
     reset_live_plan_cache(paths);
@@ -1016,9 +1033,9 @@ fn hot_swap_verified(paths: &Paths, target: &Account, creds: &Value) -> Result<(
             backoff(attempt);
             continue;
         }
-        if let Some(cfg) = &target.config {
+        if target.config.is_some() {
             if !new_gen_provider_config(&paths.data_root) {
-                if let Err(e) = write_live_config(paths, cfg) {
+                if let Err(e) = write_account_config(paths, target) {
                     last_err = Some(trf("err.write_config", &[("e", &e)]));
                     backoff(attempt);
                     continue;
@@ -1116,6 +1133,7 @@ pub fn update_account_from_live(paths: &Paths, id: &str) -> Result<Account, Stri
     acc.credentials = live;
     if !new_gen_provider_config(&paths.data_root) {
         acc.config = read_live_config(paths);
+        acc.config_plaintext_fields.clear();
     }
     acc.updated_at = now_ts();
     save_account(paths, &acc)?;
