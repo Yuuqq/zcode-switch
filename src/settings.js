@@ -3,12 +3,20 @@ import { listen } from "@tauri-apps/api/event";
 import { esc, toast, openPwModal, installDelegation, dismissSplash } from "./ui.js";
 import { ic } from "./icons.js";
 import { init, t, lang, stripErr } from "./i18n.js";
+import { connectivityHtml, magpieHtml, releaseUrl, installSteps } from "./settings-diagnostics.js";
 
 const $app = document.getElementById("app");
 let state = null;
 let autostart = false;
 let busy = false;
 let appVer = "";
+let proxyDraft = null;
+let proxyTesting = false;
+let proxyReport = null;
+let proxyError = false;
+let magpieBusy = false;
+let magpieError = false;
+let magpieDiagnostics = null;
 
 async function refresh() {
   state = await invoke("get_state");
@@ -29,6 +37,40 @@ async function guard(fn) {
 }
 
 const actions = {
+  async testProxy() {
+    if (proxyTesting) return;
+    const proxy = document.querySelector(".settings input.auth-proxy")?.value.trim() || null;
+    proxyTesting = true; proxyError = false; proxyReport = null; render();
+    try { proxyReport = await invoke("test_proxy_connection", { proxy }); }
+    catch { proxyError = true; }
+    finally { proxyTesting = false; render(); }
+  },
+
+  async magpieDiagnostics() {
+    if (magpieBusy) return;
+    magpieBusy = true; magpieError = false; render();
+    try { magpieDiagnostics = await invoke("get_magpie_diagnostics"); }
+    catch { magpieError = true; }
+    finally { magpieBusy = false; render(); }
+  },
+
+  async openMagpieRelease() {
+    try { await invoke("open_external", { url: releaseUrl(appVer) }); }
+    catch { toast(t("diag.openError"), "err"); }
+  },
+
+  async copyMagpieSteps() {
+    const field = document.querySelector(".magpie-install");
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(installSteps(appVer));
+      else {
+        field.focus(); field.select();
+        if (!document.execCommand?.("copy")) throw new Error("clipboard unavailable");
+      }
+      toast(t("diag.copied"), "ok");
+    } catch { field?.focus(); field?.select(); toast(t("diag.copyError"), "warn"); }
+  },
+
   async setLoginMethod(method) {
     await guard(async () => {
       await invoke("set_login_method", { method });
@@ -173,6 +215,8 @@ function render() {
     return;
   }
   const s = state;
+  const input = document.querySelector(".settings input.auth-proxy");
+  if (input) proxyDraft = input.value;
   document.title = `Z·SWITCH ${t("s.title")}`;
   $app.innerHTML = `
     <header class="topbar">
@@ -195,10 +239,13 @@ function render() {
       </div>
       ${toggle(s.auth_proxy_on, "actions.toggleAuthProxy()", t("s.proxyToggle"), t("s.proxyToggleDesc"))}
       <div class="path-line" style="margin-top:6px">
-        <input class="zcode-path auth-proxy" type="text" value="${esc(s.auth_proxy_url || "")}"
-          placeholder="${t("s.proxyPh")}" keydown="onProxyKey(event)">
+        <input class="zcode-path auth-proxy" type="password" value="${esc(proxyDraft ?? s.auth_proxy_url ?? "")}" autocomplete="off" spellcheck="false" autocapitalize="off"
+          aria-label="${t("s.proxyPh")}" placeholder="${t("s.proxyPh")}" keydown="onProxyKey(event)">
         <button class="btn-ghost" click="actions.saveProxy()">${t("common.save")}</button>
+        <button class="btn-ghost" click="actions.testProxy()" ${proxyTesting ? "disabled" : ""}>${t(proxyTesting ? "diag.testing" : "diag.test")}</button>
       </div>
+      <p class="diagnostic-hint">${t("diag.proxyHint")}</p>
+      ${proxyError ? `<p class="diagnostic-warn" role="status">${t("diag.failed")}</p>` : connectivityHtml(proxyReport)}
       <label style="margin-top:14px">${t("s.libLabel")}</label>
       <div class="lib-row">
         <button class="btn-ghost has-ic" click="actions.importFiles()">${ic("import", 14)} ${t("s.importBtn")}</button>
@@ -211,6 +258,10 @@ function render() {
         <button class="btn-ghost" click="actions.savePath()">${t("common.save")}</button>
       </div>
       <div class="hint">${t("s.hint")}</div>
+      <label style="margin-top:14px">${t("diag.magpieTitle")}</label>
+      <button class="btn-ghost" click="actions.magpieDiagnostics()" ${magpieBusy ? "disabled" : ""}>${t(magpieBusy ? "diag.loading" : "diag.refresh")}</button>
+      ${magpieError ? `<p class="diagnostic-warn" role="status">${t("diag.failed")}</p>` : ""}
+      ${magpieHtml(magpieDiagnostics, appVer)}
       <div class="gh-row"><a class="gh-link" href="https://github.com/pjpv/zcode-switch" target="_blank" rel="noopener" click="actions.openGitHub()">${t("s.githubLink")}</a>${appVer ? `<span class="ver">v${esc(appVer)}</span>` : ""}</div>
     </section>`;
 }
@@ -230,6 +281,7 @@ listen("state-changed", () => {
     await refresh();
     render();
     dismissSplash();
+    actions.magpieDiagnostics();
   } catch (e) {
     $app.innerHTML = `<div class="loading" style="color:var(--red)">${t("common.loadFail", { e: esc(String(e)) })}</div>`;
     dismissSplash();
