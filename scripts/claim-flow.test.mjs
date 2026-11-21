@@ -38,9 +38,12 @@ function harness(invoke) {
     loadAcctQuota = async () => {};
     loadClaimPreview = async () => {};
     scheduleNext = () => {};
+    startRefreshTicker = () => {};
+    stopRefreshTickerIfIdle = () => {};
     state = { accounts: [{ id: 'account', name: 'Account' }], auto_claim: true };
     autoCooldownReady = true;
     globalThis.api = { actions, runClaimAttempt, autoClaimTick,
+      setAccounts: (accounts) => { state.accounts = accounts; },
       snapshot: () => ({ claimable, autoClaimCooldown, autoCooldownReady }) };
   `, context);
   return { api: context.api, calls, handlers, timers, toasts, logs };
@@ -162,4 +165,41 @@ test("cooldown persistence failure pauses future auto rounds", async () => {
   assert.equal(h.api.snapshot().autoCooldownReady, false);
   await h.api.autoClaimTick();
   assert.equal(starts, 1);
+});
+
+for (const scenario of [
+  { name: "all successful", results: [{ plans: [{ plan_id: "one" }] }, { plans: [] }], n: 2, k: 1, kind: "ok" },
+  { name: "empty eligibility", results: [{ plans: [] }], n: 1, k: 0, kind: "ok" },
+  { name: "mixed success and failure", results: [{ plans: [] }, new Error("quota/eligibility unavailable")], n: 1, k: 0, f: 1, kind: "warn" },
+  { name: "all failed", results: [new Error("refresh unavailable")], n: 0, k: 0, f: 1, kind: "err" },
+  { name: "activation warning", results: [{ plans: [], activationError: "report failed" }], n: 1, k: 0, w: 1, kind: "warn" },
+]) {
+  test(`eligibility refresh summary: ${scenario.name}`, async () => {
+    const h = harness(async (command, args) => {
+      if (command !== "claim_refresh") throw new Error(`Unexpected command: ${command}`);
+      const result = scenario.results[Number(args.id)];
+      if (result instanceof Error) throw result;
+      return result;
+    });
+    h.api.setAccounts(scenario.results.map((_, i) => ({ id: String(i), name: `Account ${i}` })));
+    await h.api.actions.refreshClaim();
+    const [message, kind] = h.toasts.at(-1);
+    assert.equal(kind, scenario.kind);
+    const params = JSON.parse(message.slice(message.indexOf(":") + 1));
+    assert.equal(params.n, scenario.n);
+    assert.equal(params.k, scenario.k);
+    if (scenario.kind !== "ok") {
+      assert.equal(params.f, scenario.f || 0);
+      assert.equal(params.w, scenario.w || 0);
+      assert.ok(h.toasts.every(([, type]) => type !== "ok"));
+    }
+  });
+}
+
+test("eligibility refresh with no accounts does not invoke or announce success", async () => {
+  const h = harness(async () => { throw new Error("No request expected"); });
+  h.api.setAccounts([]);
+  await h.api.actions.refreshClaim();
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.toasts.length, 0);
 });

@@ -83,6 +83,7 @@ export const zh = {
   "m.claimEndsAt": "有效期至 {time}",
   "m.claimNextAt": "，{time} 后可再领",
   "m.refreshClaimDone": "已刷新 {n} 个账号，{k} 个有可领套餐",
+  "m.refreshClaimPartial": "已刷新 {n} 个账号，{k} 个有可领套餐；{f} 个失败，{w} 个激活上报警告",
   "m.refreshClaimAcctErr": "「{name}」刷新失败：{err}",
   "m.autoClaimOn": "已开启自动领取",
   "m.autoClaimOnDetail": "开启后立即检测一次，此后每 10 分钟一次",
