@@ -264,8 +264,8 @@ export function openExportReport(report) {
   mask.innerHTML = `<div class="pw-panel export-report-panel" role="dialog" aria-modal="true" aria-labelledby="export-report-title">
     <div class="pw-title" id="export-report-title">${t("report.title")}</div>
     <div class="pw-sub export-report-summary">${esc(t("report.count", { count: report.count }))}<br>${esc(t("report.path", { path: report.path }))}</div>
-    <h3>${esc(t("report.skipped", { count: report.skipped.length }))}</h3>
-    <div class="export-report-results"><table>
+    <h3 id="export-report-skipped">${esc(t("report.skipped", { count: report.skipped.length }))}</h3>
+    <div class="export-report-results" tabindex="0" role="region" aria-labelledby="export-report-skipped"><table>
       <thead><tr><th scope="col">${t("report.account")}</th><th scope="col">${t("report.reason")}</th></tr></thead>
       <tbody>${report.skipped.map(({ name, reason }) => `<tr><td>${esc(name)}</td><td>${esc(reason)}</td></tr>`).join("")}</tbody>
     </table></div>
@@ -274,6 +274,7 @@ export function openExportReport(report) {
       <button type="button" class="btn-primary export-report-close">${t("report.close")}</button></div>
   </div>`;
   const copy = mask.querySelector(".export-report-copy");
+  const results = mask.querySelector(".export-report-results");
   const previous = document.activeElement;
   const closeButton = mask.querySelector(".export-report-close");
   const status = mask.querySelector(".export-report-status");
@@ -286,7 +287,7 @@ export function openExportReport(report) {
   const key = (event) => {
     if (event.key === "Escape") close();
     if (event.key === "Tab") {
-      const buttons = [copy, closeButton].filter((button) => !button.disabled);
+      const buttons = [results, copy, closeButton].filter((el) => !el.disabled);
       const index = buttons.indexOf(document.activeElement);
       if (index < 0 || (event.shiftKey && index === 0) || (!event.shiftKey && index === buttons.length - 1)) {
         event.preventDefault();
