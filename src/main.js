@@ -5,6 +5,7 @@ import { ic } from "./icons.js";
 import { init, t, has, lang, localeTag, stripErr, errCode } from "./i18n.js";
 import { filterAccounts, bindAccountSearch } from "./account-search.js";
 import { pickClaimPlan } from "./claim-plan-picker.js";
+import { openBrowserLogin, closeBrowserLogin } from "./browser-login.js";
 
 const $app = document.getElementById("app");
 let state = null;
@@ -13,6 +14,7 @@ let busy = false;
 let appVer = "";
 let accountSearch = "";
 let searchComposing = false;
+let oauthRequest = 0;
 let acctQuota = {};
 let claimable = {};
 let claimAllRunning = false;
@@ -349,11 +351,19 @@ const actions = {
     openProviderModal({
       providers,
       onPick: async (id) => {
+        const request = ++oauthRequest;
+        closeBrowserLogin();
         try {
-          await invoke("oauth_begin", { provider: id });
-          toast(t("m.loginWindowOpened"), "ok", t("m.loginWindowDetail"));
+          const login = await invoke("oauth_begin", { provider: id });
+          if (request !== oauthRequest) return;
+          if (login.method === "browser") {
+            const provider = providers.find((p) => p.id === id);
+            openBrowserLogin(login, has(`prov.${id}`) ? t(`prov.${id}`) : provider?.display || id, { invoke });
+          } else {
+            toast(t("m.loginWindowOpened"), "ok", t("m.loginWindowDetail"));
+          }
         } catch (e) {
-          toast(stripErr(e), "err");
+          if (request === oauthRequest && !String(e).includes("__superseded__")) toast(stripErr(e), "err");
         }
       },
     });
@@ -1006,6 +1016,7 @@ listen("captcha://interactive", (ev) => {
 
 listen("oauth://done", (ev) => {
   const p = ev.payload || {};
+  if (!p.soft) closeBrowserLogin(p.flow);
   if (p.ok === false) {
     if (p.soft) {
       toast(t("m.oauthSoft", { err: p.error || t("m.unknownErr") }), "warn", t("m.oauthSoftDetail"));
