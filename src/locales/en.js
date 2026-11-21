@@ -19,7 +19,7 @@ export const en = {
   "diag.tls": "TLS / certificate error",
   "diag.proxyAuth": "Proxy authentication required (407)",
   "diag.http": "HTTP status error",
-  "diag.invalidProxy": "Invalid proxy URL",
+  "diag.invalidProxy": "Unsupported proxy format (HTTP/SOCKS5 host:port; no IPv6 or authentication)",
   "diag.proxyConnect": "Proxy tunnel failed",
   "diag.connect": "Connection failed",
   "diag.network": "Network error",

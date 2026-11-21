@@ -19,7 +19,7 @@ export const zh = {
   "diag.tls": "TLS / 证书错误",
   "diag.proxyAuth": "需要代理认证（407）",
   "diag.http": "HTTP 状态错误",
-  "diag.invalidProxy": "代理地址无效",
+  "diag.invalidProxy": "不支持的代理格式（HTTP/SOCKS5 主机:端口；不支持 IPv6 或认证）",
   "diag.proxyConnect": "代理隧道连接失败",
   "diag.connect": "连接失败",
   "diag.network": "网络错误",

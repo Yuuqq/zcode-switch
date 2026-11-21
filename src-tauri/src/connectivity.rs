@@ -84,8 +84,7 @@ fn probe(url: &str, proxy: Option<&str>) -> Probe {
             rx.recv_timeout(Duration::from_secs(1)).unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "DNS timeout")))
         });
     if let Some(proxy) = proxy {
-        let valid = proxy.parse::<tauri::Url>().ok().is_some_and(|u| ["http", "socks5"].contains(&u.scheme()) && u.host_str().is_some() && u.query().is_none() && u.fragment().is_none());
-        let proxy = valid.then(|| ureq::Proxy::new(proxy)).transpose();
+        let proxy = crate::oauth::parse_proxy_url(proxy).ok().map(ureq::Proxy::new).transpose();
         match proxy {
             Ok(Some(proxy)) => builder = builder.proxy(proxy),
             _ => return Probe { ok: false, category: "invalid_proxy", status: None, latency_ms: start.elapsed().as_millis() },
@@ -143,6 +142,20 @@ mod tests {
         assert_eq!(redact_proxy("socks5://user:secret@[::1]:1080"), "socks5://[::1]:1080");
         assert_eq!(redact_proxy("user:secret@bad proxy"), "[invalid proxy]");
         assert_eq!(probe("https://example.invalid/", Some("user:secret@bad proxy")).category, "invalid_proxy");
+    }
+
+    #[test]
+    fn probe_rejects_formats_rejected_by_the_login_webview_path() {
+        let results = [
+            "http://[::1]:8080",
+            "http://user%40x:p%3Ass@127.0.0.1:1",
+            "http://localhost",
+            "http://localhost:8080/",
+        ].map(|proxy| {
+            assert!(crate::oauth::parse_proxy_url(proxy).is_err());
+            probe("https://example.invalid/", Some(proxy)).category
+        });
+        assert_eq!(results, ["invalid_proxy"; 4], "probe accepted formats the login path rejects");
     }
 
     #[test]
