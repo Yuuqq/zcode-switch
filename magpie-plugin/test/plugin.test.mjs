@@ -24,6 +24,31 @@ afterEach(() => {
 });
 const write = (id, snapshot) => writeFileSync(join(dir, id + ".json"), JSON.stringify({ id, ...snapshot }));
 const snapshot = () => Object.fromEntries(readdirSync(dir).map((f) => [f, readFileSync(join(dir, f), "utf8")]));
+
+test("encrypted login-saved token/config shape resolves paid keys and JWT-only sessions", () => {
+  const encrypt = (value) => {
+    const nonce = Buffer.alloc(12, 9);
+    const cipher = createCipheriv("aes-256-gcm", createHash("sha256").update("fixture-secret").digest(), nonce);
+    const data = Buffer.concat([cipher.update(value), cipher.final()]);
+    return "enc:v1:" + [nonce, cipher.getAuthTag(), data].map((v) => v.toString("base64url")).join(".");
+  };
+  const jwt = JSON.parse(readFileSync(join(dir, "jwt-account.json"))).credentials.zcodejwttoken;
+  for (const site of ["bigmodel", "zai"]) {
+    const credentials = {
+      zcodejwttoken: encrypt(jwt), "oauth:active_provider": site,
+      [`oauth:${site}:access_token`]: encrypt("fixture.access"),
+      [`oauth:${site}:refresh_token`]: encrypt("fixture.refresh"),
+      [`oauth:${site}:user_info`]: JSON.stringify({ id: "login-user", email: "login@example.invalid" }),
+    };
+    const config = { provider: { [`builtin:${site}-coding-plan`]: { options: { apiKey: encrypt("fixture.login-key") } } } };
+    write("login-snapshot", { name: "Login", credentials, config });
+    assert.equal(readAccount("login-snapshot").credentials[`oauth:${site}:refresh_token`], "fixture.refresh");
+    assert.equal(resolveAccount("login-snapshot").key, "fixture.login-key");
+    write("login-snapshot", { name: "Login", credentials });
+    assert.equal(resolveAccount("login-snapshot").key, jwt);
+    assert.equal(resolveAccount("login-snapshot").session, true);
+  }
+});
 const host = async () => {
   const auth = {};
   const hooks = await Plugin({ client: { auth: { async set({ path, body }) { auth[path.id] = structuredClone(body); } } } });

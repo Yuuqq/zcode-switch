@@ -116,6 +116,15 @@ pub fn decrypt_json_opt(value: Option<&str>, secret: &str) -> Option<Value> {
     serde_json::from_str(&plain).ok()
 }
 
+pub(crate) fn decrypt_value(value: &Value, secret: &str) -> Result<Value, String> {
+    match value {
+        Value::String(s) if is_encrypted(s) => decrypt_with_secret(s, secret).map(Value::String),
+        Value::Array(items) => items.iter().map(|v| decrypt_value(v, secret)).collect(),
+        Value::Object(map) => map.iter().map(|(k, v)| Ok((k.clone(), decrypt_value(v, secret)?))).collect(),
+        _ => Ok(value.clone()),
+    }
+}
+
 pub fn decode_jwt(jwt: &str) -> Option<Value> {
     let mut parts = jwt.split('.');
     let _header = parts.next()?;
