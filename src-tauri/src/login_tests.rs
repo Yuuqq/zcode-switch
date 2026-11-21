@@ -1,4 +1,5 @@
 use super::*;
+use std::ffi::OsStr;
 
 const JWT: &str = "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjQxMDI0NDQ4MDB9.fixture";
 const ACCESS: &str = "login-access-token-longer-than-twenty-characters";
@@ -64,6 +65,18 @@ fn active_login_detection_matches_duplicate_detection_after_capture() {
     }
     let fixture = Fixture::new();
     assert!(store::get_state(&fixture.paths()).unwrap().active_account_id.is_none());
+}
+
+#[test]
+fn windows_browser_opener_passes_oauth_query_as_one_argument_without_a_shell() {
+    for url in [
+        "https://zcode.z.ai/authorize?provider=zai&state=secret-state&redirect_uri=zcode%3A%2F%2Foauth%2Fcallback",
+        "https://example.com/登录?name=用户%20名&state=a%26b&encoded=%25value%25",
+    ] {
+        let cmd = store::windows_browser_command(url);
+        assert_eq!(cmd.get_program(), OsStr::new("rundll32.exe"));
+        assert_eq!(cmd.get_args().collect::<Vec<_>>(), vec![OsStr::new("url.dll,FileProtocolHandler"), OsStr::new(url)]);
+    }
 }
 
 #[test]

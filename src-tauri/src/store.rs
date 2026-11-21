@@ -424,6 +424,13 @@ pub fn launch_zcode(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(any(windows, test))]
+pub(crate) fn windows_browser_command(url: &str) -> Command {
+    let mut cmd = no_window("rundll32.exe");
+    cmd.args(["url.dll,FileProtocolHandler", url]);
+    cmd
+}
+
 pub fn open_url(url: &str) -> Result<(), String> {
     if !url.starts_with("https://") {
         return Err("仅支持 https 链接".into());
@@ -432,11 +439,7 @@ pub fn open_url(url: &str) -> Result<(), String> {
         return Ok(());
     }
     #[cfg(windows)]
-    let cmd = {
-        let mut c = no_window("cmd");
-        c.args(["/c", "start", "", url]);
-        c
-    };
+    let cmd = windows_browser_command(url);
     #[cfg(target_os = "macos")]
     let cmd = {
         let mut c = no_window("open");
