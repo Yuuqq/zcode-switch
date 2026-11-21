@@ -22,6 +22,13 @@ Tauri 2 桌面工具：在多个 ZCode 账号之间一键切换，自动显示�
 不复制凭据、不切换 ZCode 当前登录。请从本地 `magpie-plugin/` 子目录安装，
 安装命令与安全说明见插件文档。提供商 ID 为 `zcode-switch`，不接管社区 `zcode`。
 
+也可从 [Releases](https://github.com/Yuuqq/zcode-switch/releases) 下载
+`zcode-switch-magpie-plugin-<tag>.zip` 或 `.tar.gz`，使用
+`checksums-magpie-plugin-<tag>.txt` 核对 SHA-256 后解压。
+执行 `magpie plugin add /abs/path/zcode-switch-magpie-plugin` 安装解压后的目录；
+路径必须为绝对路径，或在父目录使用 `./zcode-switch-magpie-plugin`。
+使用插件期间请保留解压目录。
+
 ## 安全设计
 
 - **本地存储、官方服务**：账号快照和设置保存在本地；额度与活动请求直连官方服务。手动或自动刷新活动资格时，会按官方客户端的方式向 `https://zcode.z.ai/api/v1/event/report` 发送 `app_launch` / `app_daily_active` 事件，包含用户/设备标识与客户端环境信息；不新增伪造或随机活动。
