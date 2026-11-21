@@ -1433,9 +1433,9 @@ pub fn get_state(paths: &Paths) -> Result<AppState, String> {
     let live = read_live(paths)?;
     let live_hash = live.as_ref().map(canonical_hash);
     let live_logged_in = live.as_ref().map(is_logged_in).unwrap_or(false);
-    let active_account_id = live_hash
-        .as_ref()
-        .and_then(|h| accounts.iter().find(|a| &a.hash == h).map(|a| a.id.clone()));
+    let active_account_id = live.as_ref().zip(live_hash.as_deref())
+        .and_then(|(live, hash)| find_same_login(live, hash, &accounts, &paths.home))
+        .map(|i| accounts[i].id.clone());
     let live_identity = live
         .as_ref()
         .filter(|_| live_logged_in)
@@ -1449,7 +1449,7 @@ pub fn get_state(paths: &Paths) -> Result<AppState, String> {
             name: a.name.clone(),
             created_at: a.created_at.clone(),
             updated_at: a.updated_at.clone(),
-            is_active: live_hash.as_deref() == Some(a.hash.as_str()),
+            is_active: active_account_id.as_deref() == Some(a.id.as_str()),
             has_config: a.config.is_some(),
             has_user_info: crate::claim::telemetry_user_id(&paths.home, &a.credentials).is_some(),
             jwt_expired: account_jwt_expired(&a.credentials, &paths.home),

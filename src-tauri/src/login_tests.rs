@@ -42,6 +42,31 @@ fn failed_config_restore_does_not_replace_live_login_or_poison_retry() {
 }
 
 #[test]
+fn active_login_detection_matches_duplicate_detection_after_capture() {
+    for plain in [credentials(), json!({"zcodejwttoken": JWT})] {
+        let fixture = Fixture::new();
+        let paths = fixture.paths();
+        write_live(&paths, &plain).unwrap();
+        let captured = store::capture_current(&paths, Some("Captured login".into())).unwrap();
+        let saved = load_account(&paths, &captured.id).unwrap();
+        assert_ne!(saved.hash, canonical_hash(&plain));
+        assert!(store::capture_current(&paths, None).is_err());
+        let state = store::get_state(&paths).unwrap();
+        assert_eq!(state.active_account_id.as_deref(), Some(captured.id.as_str()));
+        assert!(state.accounts.iter().find(|a| a.id == captured.id).unwrap().is_active);
+
+        write_live(&paths, &saved.credentials).unwrap();
+        assert_eq!(store::get_state(&paths).unwrap().active_account_id.as_deref(), Some(captured.id.as_str()));
+        write_live(&paths, &json!({"zcodejwttoken": "another-login"})).unwrap();
+        let state = store::get_state(&paths).unwrap();
+        assert!(state.active_account_id.is_none());
+        assert!(state.accounts.iter().all(|a| !a.is_active));
+    }
+    let fixture = Fixture::new();
+    assert!(store::get_state(&fixture.paths()).unwrap().active_account_id.is_none());
+}
+
+#[test]
 fn login_method_defaults_and_cancellation_is_flow_scoped() {
     assert_eq!(Settings::default().login_method(), "browser");
     let settings: Settings = serde_json::from_value(json!({"login_method":"in-app"})).unwrap();
