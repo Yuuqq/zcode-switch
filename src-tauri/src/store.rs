@@ -939,8 +939,6 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
     let preserved_as = auto_preserve(paths, &accounts, &target.hash)?;
 
     let creds = inject_relay_pass_hash(&target.credentials, current_relay_pass(paths).as_ref());
-    write_live(paths, &creds)?;
-    backfill_relay_pass_hash(paths, &target.id, &creds);
     let new_gen = new_gen_provider_config(&paths.data_root);
     if new_gen {
         eprintln!(
@@ -953,6 +951,8 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
             write_account_config(paths, &target)?;
         }
     }
+    write_live(paths, &creds)?;
+    backfill_relay_pass_hash(paths, &target.id, &creds);
     reset_live_plan_cache(paths);
     align_family_domain(paths, &target);
     if !new_gen {
@@ -1028,11 +1028,6 @@ fn hot_swap_verified(paths: &Paths, target: &Account, creds: &Value) -> Result<(
     let mut last_err: Option<String> = None;
     let backoff = |attempt: u32| std::thread::sleep(std::time::Duration::from_millis(250 + u64::from(attempt) * 250));
     for attempt in 0..3u32 {
-        if let Err(e) = write_live(paths, creds) {
-            last_err = Some(trf("err.write", &[("e", &e)]));
-            backoff(attempt);
-            continue;
-        }
         if target.config.is_some() {
             if !new_gen_provider_config(&paths.data_root) {
                 if let Err(e) = write_account_config(paths, target) {
@@ -1041,6 +1036,11 @@ fn hot_swap_verified(paths: &Paths, target: &Account, creds: &Value) -> Result<(
                     continue;
                 }
             }
+        }
+        if let Err(e) = write_live(paths, creds) {
+            last_err = Some(trf("err.write", &[("e", &e)]));
+            backoff(attempt);
+            continue;
         }
         if let Ok(Some(v)) = read_live(paths) {
             if verify(&v) {

@@ -18,6 +18,30 @@ fn credentials() -> Value {
 }
 
 #[test]
+fn failed_config_restore_does_not_replace_live_login_or_poison_retry() {
+    let fixture = Fixture::new();
+    let paths = fixture.paths();
+    let original = json!({"zcodejwttoken": "source-login"});
+    let original_config = json!({"apiKey": "source-key"});
+    let target = Account {
+        id: "broken-config".into(), name: "Broken config".into(),
+        created_at: now_ts(), updated_at: now_ts(), hash: canonical_hash(&credentials()),
+        credentials: credentials(), config: Some(json!({"apiKey": "enc:v1:broken"})),
+        config_plaintext_fields: vec!["/apiKey".into()],
+        virtual_device_mid: Some(uuid::Uuid::new_v4().to_string()),
+        virtual_arms_uid: Some(store::new_arms_uid()),
+    };
+    save_account(&paths, &target).unwrap();
+    write_live(&paths, &original).unwrap();
+    write_live_config(&paths, &original_config).unwrap();
+    for _ in 0..2 {
+        assert!(store::switch_to(&paths, &target.id, false, false, false).is_err());
+        assert_eq!(read_live(&paths).unwrap().unwrap(), original);
+        assert_eq!(read_live_config(&paths).unwrap(), original_config);
+    }
+}
+
+#[test]
 fn login_method_defaults_and_cancellation_is_flow_scoped() {
     assert_eq!(Settings::default().login_method(), "browser");
     let settings: Settings = serde_json::from_value(json!({"login_method":"in-app"})).unwrap();
