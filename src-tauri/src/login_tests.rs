@@ -43,6 +43,28 @@ fn failed_config_restore_does_not_replace_live_login_or_poison_retry() {
 }
 
 #[test]
+fn failed_credential_write_restores_previous_live_config() {
+    let fixture = Fixture::new();
+    let paths = fixture.paths();
+    let original_config = json!({"apiKey": "source-key"});
+    let target = Account {
+        id: "target".into(), name: "Target".into(),
+        created_at: now_ts(), updated_at: now_ts(), hash: canonical_hash(&credentials()),
+        credentials: credentials(), config: Some(json!({"apiKey": "target-key"})),
+        config_plaintext_fields: vec![],
+        virtual_device_mid: Some(uuid::Uuid::new_v4().to_string()),
+        virtual_arms_uid: Some(store::new_arms_uid()),
+    };
+    save_account(&paths, &target).unwrap();
+    write_live_config(&paths, &original_config).unwrap();
+    std::fs::create_dir_all(paths.live_file()).unwrap();
+    for hot in [false, true] {
+        assert!(store::switch_to(&paths, &target.id, false, false, hot).is_err());
+        assert_eq!(read_live_config(&paths).unwrap(), original_config);
+    }
+}
+
+#[test]
 fn active_login_detection_matches_duplicate_detection_after_capture() {
     for plain in [credentials(), json!({"zcodejwttoken": JWT})] {
         let fixture = Fixture::new();

@@ -322,6 +322,24 @@ pub(crate) fn write_account_config(paths: &Paths, account: &Account) -> Result<(
     write_live_config(paths, &config)
 }
 
+fn write_config_then_live(paths: &Paths, target: &Account, creds: &Value) -> Result<(), String> {
+    let restore_config = target.config.is_some() && !new_gen_provider_config(&paths.data_root);
+    let previous = if restore_config { fs::read_to_string(paths.live_config()).ok() } else { None };
+    if restore_config {
+        write_account_config(paths, target).map_err(|e| trf("err.write_config", &[("e", &e)]))?;
+    }
+    if let Err(e) = write_live(paths, creds) {
+        if restore_config {
+            let _ = match &previous {
+                Some(body) => atomic_write(&paths.live_config(), body),
+                None => fs::remove_file(paths.live_config()).map_err(|e| e.to_string()),
+            };
+        }
+        return Err(trf("err.write", &[("e", &e)]));
+    }
+    Ok(())
+}
+
 pub(crate) fn in_sandbox() -> bool {
     std::env::var("ZCODE_SWITCH_HOME").is_ok()
 }
@@ -949,12 +967,7 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
             crate::quota::zcode_app_version()
         );
     }
-    if target.config.is_some() {
-        if !new_gen {
-            write_account_config(paths, &target)?;
-        }
-    }
-    write_live(paths, &creds)?;
+    write_config_then_live(paths, &target, &creds)?;
     backfill_relay_pass_hash(paths, &target.id, &creds);
     reset_live_plan_cache(paths);
     align_family_domain(paths, &target);
@@ -1031,17 +1044,8 @@ fn hot_swap_verified(paths: &Paths, target: &Account, creds: &Value) -> Result<(
     let mut last_err: Option<String> = None;
     let backoff = |attempt: u32| std::thread::sleep(std::time::Duration::from_millis(250 + u64::from(attempt) * 250));
     for attempt in 0..3u32 {
-        if target.config.is_some() {
-            if !new_gen_provider_config(&paths.data_root) {
-                if let Err(e) = write_account_config(paths, target) {
-                    last_err = Some(trf("err.write_config", &[("e", &e)]));
-                    backoff(attempt);
-                    continue;
-                }
-            }
-        }
-        if let Err(e) = write_live(paths, creds) {
-            last_err = Some(trf("err.write", &[("e", &e)]));
+        if let Err(e) = write_config_then_live(paths, target, creds) {
+            last_err = Some(e);
             backoff(attempt);
             continue;
         }
