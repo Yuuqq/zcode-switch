@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { esc, toast, openPwModal, openConfirmModal, openProviderModal, installDelegation, dismissSplash } from "./ui.js";
 import { ic } from "./icons.js";
 import { init, t, has, lang, localeTag, stripErr, errCode } from "./i18n.js";
+import { filterAccounts, bindAccountSearch } from "./account-search.js";
+import { pickClaimPlan } from "./claim-plan-picker.js";
 import { openBrowserLogin, closeBrowserLogin } from "./browser-login.js";
 
 const $app = document.getElementById("app");
@@ -10,6 +12,8 @@ let state = null;
 let renaming = null;
 let busy = false;
 let appVer = "";
+let accountSearch = "";
+let searchComposing = false;
 let oauthRequest = 0;
 let acctQuota = {};
 let claimable = {};
@@ -367,11 +371,14 @@ const actions = {
 
   async claim(id) {
     if (claimActive || claimAllRunning || refreshClaim.running) { toast(t("m.claimBusy"), "warn"); return; }
-    const plans = claimable[id]?.plans || [];
-    const plan = plans[0];
-    if (!plan) { toast(t("m.noClaimable"), "warn"); return; }
+    const plans = claimable[id]?.stale ? [] : claimable[id]?.plans || [];
+    if (!plans.length) { toast(t("m.noClaimable"), "warn"); return; }
     claimActive = true;
     try {
+      const planId = await pickClaimPlan(plans, { accountName: accountName(id), describePlan: planGrantDetails });
+      if (planId === null) return;
+      const plan = !claimable[id]?.stale && claimable[id]?.plans?.find((p) => p.plan_id === planId);
+      if (!plan) { toast(t("m.planPickerGone"), "warn"); return; }
       toast(t("m.claimVerify", { name: plan.name || plan.plan_id }), "ok", t("m.claimVerifyDetail"));
       const r = await runClaimAttempt(id, plan.plan_id);
       if (r.ok === false) toast(r.message || t("m.claimTimeout"), "warn");
@@ -703,6 +710,11 @@ function grantLabel(plan) {
   }
   return (plan.grants || [])[0] || "";
 }
+function planGrantDetails(plan) {
+  return plan.grant_items?.length
+    ? plan.grant_items.map((item) => grantLabel({ grant_items: [item] })).join(t("common.listSep"))
+    : (plan.grants || []).join(t("common.listSep"));
+}
 function claimStripHtml(id) {
   const c = claimable[id];
   const plan = c?.plans?.[0];
@@ -714,7 +726,7 @@ function claimStripHtml(id) {
     ${ic("gift", 15)}
     <span class="claim-name">${esc(label)}</span>
     ${grants ? `<span class="claim-grants">${esc(grants)}</span>` : ""}
-    <button class="btn-claim has-ic" click="actions.claim('${id}')" ${claimAllRunning || refreshClaim.running || claimActive || autoClaimRunning ? "disabled" : ""}>${ic("gift", 13)} ${t("btn.claim")}</button>
+    <button class="btn-claim has-ic" click="actions.claim('${id}')" ${claimAllRunning || refreshClaim.running || claimActive || autoClaimRunning ? "disabled" : ""}>${ic("gift", 13)} ${c.plans.length > 1 ? t("btn.choosePlan", { count: c.plans.length }) : t("btn.claim")}</button>
   </div>`;
 }
 
@@ -811,6 +823,10 @@ function restoreScroll(cap) {
 }
 
 function render() {
+  if (searchComposing) return;
+  const previousSearch = $app.querySelector(".account-search");
+  const searchFocus = previousSearch && document.activeElement === previousSearch
+    ? { start: previousSearch.selectionStart, end: previousSearch.selectionEnd } : null;
   const scrollCap = captureScroll();
   if (!state) {
     $app.innerHTML = `<div class="loading">LOADING</div>`;
@@ -827,7 +843,8 @@ function render() {
       ? unsaved ? t("m.status.unsaved") : t("m.status.safe")
       : t("m.status.loggedOut");
 
-  const rows = s.accounts.map((a) => {
+  const visibleAccounts = filterAccounts(s.accounts, accountSearch);
+  const rows = visibleAccounts.map((a) => {
     const isActive = a.is_active;
     if (renaming === a.id) {      return `
       <div class="row${isActive ? " active" : ""}" data-id="${a.id}">
@@ -880,7 +897,7 @@ function render() {
          ${t("m.emptyTitle")}<br>
          ${t("m.emptyBody")}
        </div>`
-    : rows;
+    : visibleAccounts.length ? rows : `<div class="empty">${t("m.searchEmpty")}</div>`;
 
   const claimableCount = s.accounts.filter((a) => (claimable[a.id]?.plans || []).length > 0).length;
 
@@ -930,12 +947,23 @@ function render() {
 
     <div class="section-head">
       <h2>${t("m.accounts")}</h2>
-      <span class="count">${t("m.count", { count: s.accounts.length })}</span>
+      <span class="count">${accountSearch.trim() ? t("m.searchCount", { shown: visibleAccounts.length, total: s.accounts.length }) : t("m.count", { count: s.accounts.length })}</span>
+    </div>
+
+    <div class="account-search-bar">
+      <input class="account-search" type="search" value="${esc(accountSearch)}" aria-label="${t("m.searchLabel")}" placeholder="${t("m.searchLabel")}">
+      ${accountSearch.trim() ? `<div class="search-scope">${t("m.searchBatchScope", { count: s.accounts.length })}</div>` : ""}
     </div>
 
     <main class="list">${listHtml}</main>
   `;
   restoreScroll(scrollCap);
+  const search = $app.querySelector(".account-search");
+  bindAccountSearch(search, (value) => { accountSearch = value; render(); }, (composing) => { searchComposing = composing; });
+  if (searchFocus) {
+    search.focus({ preventScroll: true });
+    search.setSelectionRange(searchFocus.start, searchFocus.end);
+  }
 }
 
 window.actions = actions;
