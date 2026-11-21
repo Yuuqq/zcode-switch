@@ -4,6 +4,8 @@ pub mod i18n;
 mod claim;
 mod claim_flow;
 mod claim_state;
+mod connectivity;
+mod magpie_diagnostics;
 mod flowlog;
 mod oauth;
 mod probe;
@@ -1148,6 +1150,16 @@ async fn open_external(url: String) -> Result<(), String> {
     store::open_url(&url)
 }
 
+#[tauri::command]
+async fn test_proxy_connection(proxy: Option<String>) -> Result<connectivity::Report, String> {
+    tauri::async_runtime::spawn_blocking(move || connectivity::check(proxy)).await.map_err(|_| "diagnostic_failed".into())
+}
+
+#[tauri::command]
+async fn get_magpie_diagnostics() -> Result<magpie_diagnostics::Diagnostics, String> {
+    tauri::async_runtime::spawn_blocking(magpie_diagnostics::inspect).await.map_err(|_| "diagnostic_failed".into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1180,6 +1192,8 @@ pub fn run() {
             oauth_providers,
             oauth_begin,
             set_auth_proxy,
+            test_proxy_connection,
+            get_magpie_diagnostics,
             kill_zcode,
             set_behavior,
             set_language,
