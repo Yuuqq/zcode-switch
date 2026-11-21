@@ -115,6 +115,7 @@ fn export_accounts(
             "createdAt": account.created_at,
             "credentials": account.credentials,
             "config": account.config,
+            "configPlaintextFields": account.config_plaintext_fields,
         });
         let mut encrypted = vec![];
         if let Err(e) = decrypt_entry(&mut entry, secret, false, &mut encrypted, &mut false) {
@@ -278,6 +279,16 @@ fn prepare_import(
             let plain = field.as_str().ok_or_else(|| tr("err.bundle.fields"))?;
             *field = Value::String(zcrypto::encrypt_with_secret(plain, secret)?);
         }
+        let config_plaintext_fields: Vec<String> = serde_json::from_value(
+            entry.get("configPlaintextFields").cloned().unwrap_or_else(|| json!([])),
+        ).map_err(|_| tr("err.bundle.fields"))?;
+        let mut config_seen = HashSet::new();
+        for pointer in &config_plaintext_fields {
+            if !pointer.starts_with('/') || !config_seen.insert(pointer)
+                || !encrypted.contains(&format!("/config{pointer}")) {
+                return Err(tr("err.bundle.fields"));
+            }
+        }
         if !hashes.insert(hash) {
             report.skipped.push(tr("err.bundle.duplicate"));
             continue;
@@ -305,6 +316,7 @@ fn prepare_import(
             hash: canonical_hash(&entry["credentials"]),
             credentials: entry["credentials"].clone(),
             config: entry.get("config").filter(|v| !v.is_null()).cloned(),
+            config_plaintext_fields,
             virtual_device_mid: None,
             virtual_arms_uid: None,
         };
@@ -406,6 +418,7 @@ mod tests {
             hash: canonical_hash(&credentials),
             credentials,
             config: Some(json!({"language": "en"})),
+            config_plaintext_fields: vec![],
             virtual_device_mid: None,
             virtual_arms_uid: None,
         }
