@@ -17,6 +17,7 @@ mod zcrypto;
 mod login_tests;
 
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use store::*;
 use tauri::menu::{MenuBuilder, MenuItem};
@@ -28,6 +29,7 @@ use tauri_plugin_dialog::DialogExt;
 const TRAY_ID: &str = "main";
 
 static STORE_LOCK: Mutex<()> = Mutex::new(());
+static TRAY_REFRESH: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 struct PendingClaim {
@@ -56,6 +58,14 @@ fn store_guard() -> std::sync::MutexGuard<'static, ()> {
     }
 }
 
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 fn sanitize_filename(name: &str) -> String {
     name.chars()
         .map(|c| match c {
@@ -65,57 +75,72 @@ fn sanitize_filename(name: &str) -> String {
         .collect()
 }
 
-fn tray_menu_inner(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    let paths = Paths::detect();
-    let state = match store::get_state(&paths) {
-        Ok(s) => s,
+struct TrayState {
+    tooltip: String,
+    can_capture: bool,
+    can_launch: bool,
+    can_kill: bool,
+}
+
+fn load_tray_state() -> Option<TrayState> {
+    let state = match store::get_state(&Paths::detect()) {
+        Ok(state) => state,
         Err(e) => {
             eprintln!("tray state error: {e}");
-            return MenuBuilder::new(app)
-                .item(&MenuItem::with_id(app, "show", &i18n::tr("tray.show"), true, None::<&str>)?)
-                .item(&MenuItem::with_id(app, "quit", &i18n::tr("tray.quit"), true, None::<&str>)?)
-                .build();
+            return None;
         }
     };
+    let cur = state.accounts.iter().find(|a| a.is_active)
+        .map(|a| a.name.clone())
+        .or_else(|| state.live_identity.as_ref().and_then(|i| i.label()))
+        .unwrap_or_else(|| if state.live_logged_in { i18n::tr("tray.unsaved") } else { i18n::tr("tray.logged_out") });
+    Some(TrayState {
+        tooltip: format!("Z·SWITCH · {cur}"),
+        can_capture: state.live_logged_in,
+        can_launch: state.zcode_path_ok && !state.zcode_running,
+        can_kill: state.zcode_running,
+    })
+}
 
-    let b = MenuBuilder::new(app)
-        .item(&MenuItem::with_id(app, "show", &i18n::tr("tray.show"), true, None::<&str>)?)
-        .item(&MenuItem::with_id(app, "capture", &i18n::tr("tray.capture"), state.live_logged_in, None::<&str>)?)
-        .separator()
-        .item(&MenuItem::with_id(app, "launch", &i18n::tr("tray.launch"), state.zcode_path_ok && !state.zcode_running, None::<&str>)?)
-        .item(&MenuItem::with_id(app, "kill", &i18n::tr("tray.kill"), state.zcode_running, None::<&str>)?)
-        .separator()
-        .item(&MenuItem::with_id(app, "quit", &i18n::tr("tray.quit"), true, None::<&str>)?);
-    b.build()
+fn tray_menu_inner(app: &AppHandle, state: Option<&TrayState>) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    let mut b = MenuBuilder::new(app)
+        .item(&MenuItem::with_id(app, "show", &i18n::tr("tray.show"), true, None::<&str>)?);
+    if let Some(state) = state {
+        b = b.item(&MenuItem::with_id(app, "capture", &i18n::tr("tray.capture"), state.can_capture, None::<&str>)?)
+            .separator()
+            .item(&MenuItem::with_id(app, "launch", &i18n::tr("tray.launch"), state.can_launch, None::<&str>)?)
+            .item(&MenuItem::with_id(app, "kill", &i18n::tr("tray.kill"), state.can_kill, None::<&str>)?)
+            .separator();
+    }
+    b.item(&MenuItem::with_id(app, "quit", &i18n::tr("tray.quit"), true, None::<&str>)?).build()
 }
 
 pub fn rebuild_tray(app: &AppHandle) {
-    let app2 = app.clone();
-    let res = app.run_on_main_thread(move || {
-        if let Some(tray) = app2.tray_by_id(TRAY_ID) {
-            let paths = Paths::detect();
-            let tip = match store::get_state(&paths) {
-                Ok(s) => {
-                    let cur = s
-                        .accounts
-                        .iter()
-                        .find(|a| a.is_active)
-                        .map(|a| a.name.clone())
-                        .or_else(|| s.live_identity.as_ref().and_then(|i| i.label()))
-                        .unwrap_or_else(|| if s.live_logged_in { i18n::tr("tray.unsaved") } else { i18n::tr("tray.logged_out") });
-                    format!("Z·SWITCH · {cur}")
-                }
-                Err(_) => "Z·SWITCH".into(),
-            };
-            let _ = tray.set_tooltip(Some(&tip));
-            if let Ok(menu) = tray_menu_inner(&app2) {
-                let _ = tray.set_menu(Some(menu));
+    let generation = TRAY_REFRESH.fetch_add(1, Ordering::Relaxed) + 1;
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if TRAY_REFRESH.load(Ordering::Relaxed) != generation {
+            return;
+        }
+        let state = load_tray_state();
+        let app2 = app.clone();
+        let res = app.run_on_main_thread(move || {
+            // A newer refresh may finish before this one.
+            if TRAY_REFRESH.load(Ordering::Relaxed) != generation {
+                return;
             }
+            if let Some(tray) = app2.tray_by_id(TRAY_ID) {
+                let tip = state.as_ref().map_or("Z·SWITCH", |s| s.tooltip.as_str());
+                let _ = tray.set_tooltip(Some(tip));
+                if let Ok(menu) = tray_menu_inner(&app2, state.as_ref()) {
+                    let _ = tray.set_menu(Some(menu));
+                }
+            }
+        });
+        if let Err(e) = res {
+            eprintln!("rebuild_tray: {e}");
         }
     });
-    if let Err(e) = res {
-        eprintln!("rebuild_tray: {e}");
-    }
 }
 
 fn show_main(app: &AppHandle) {
@@ -161,7 +186,7 @@ fn run_tray_action(app: AppHandle, action: String) {
 
 #[tauri::command]
 async fn get_state() -> Result<AppState, String> {
-    store::get_state(&Paths::detect())
+    blocking(|| store::get_state(&Paths::detect())).await
 }
 
 #[tauri::command]
@@ -171,44 +196,54 @@ fn app_version(app: AppHandle) -> String {
 
 #[tauri::command]
 async fn capture_current(app: AppHandle, name: Option<String>) -> Result<Account, String> {
-    let _guard = store_guard();
-    let r = store::capture_current(&Paths::detect(), name);
-    rebuild_tray(&app);
-    r
+    blocking(move || {
+        let _guard = store_guard();
+        let r = store::capture_current(&Paths::detect(), name);
+        rebuild_tray(&app);
+        r
+    }).await
 }
 
 #[tauri::command]
 async fn rename_account(app: AppHandle, id: String, name: String) -> Result<Account, String> {
-    let _guard = store_guard();
-    let r = store::rename_account(&Paths::detect(), &id, &name);
-    rebuild_tray(&app);
-    r
+    blocking(move || {
+        let _guard = store_guard();
+        let r = store::rename_account(&Paths::detect(), &id, &name);
+        rebuild_tray(&app);
+        r
+    }).await
 }
 
 #[tauri::command]
 async fn delete_account(app: AppHandle, id: String) -> Result<(), String> {
-    let _guard = store_guard();
-    let r = store::delete_account(&Paths::detect(), &id);
-    rebuild_tray(&app);
-    r
+    blocking(move || {
+        let _guard = store_guard();
+        let r = store::delete_account(&Paths::detect(), &id);
+        rebuild_tray(&app);
+        r
+    }).await
 }
 
 #[tauri::command]
 async fn update_account_from_live(app: AppHandle, id: String) -> Result<Account, String> {
-    let _guard = store_guard();
-    let r = store::update_account_from_live(&Paths::detect(), &id);
-    rebuild_tray(&app);
-    r
+    blocking(move || {
+        let _guard = store_guard();
+        let r = store::update_account_from_live(&Paths::detect(), &id);
+        rebuild_tray(&app);
+        r
+    }).await
 }
 
 #[tauri::command]
 async fn switch_to(app: AppHandle, id: String, force: bool, restart: bool) -> Result<SwitchResult, String> {
-    let _guard = store_guard();
-    let paths = Paths::detect();
-    let hot = load_settings(&paths).hot_switch();
-    let r = store::switch_to(&paths, &id, force, restart, hot);
-    rebuild_tray(&app);
-    r
+    blocking(move || {
+        let _guard = store_guard();
+        let paths = Paths::detect();
+        let hot = load_settings(&paths).hot_switch();
+        let r = store::switch_to(&paths, &id, force, restart, hot);
+        rebuild_tray(&app);
+        r
+    }).await
 }
 
 #[tauri::command]
@@ -223,10 +258,12 @@ async fn get_account_quota(id: String) -> Result<quota::QuotaOverview, String> {
 
 #[tauri::command]
 async fn claim_preview(id: String) -> Result<Vec<claim::ClaimPlan>, String> {
-    let paths = Paths::detect();
-    let mid = store::ensure_virtual_device_mid(&paths, &id)?;
-    let acc = load_account(&paths, &id)?;
-    claim::preview_plans(&paths.home, &acc.credentials, acc.config.as_ref(), Some(mid))
+    blocking(move || {
+        let paths = Paths::detect();
+        let mid = store::ensure_virtual_device_mid(&paths, &id)?;
+        let acc = load_account(&paths, &id)?;
+        claim::preview_plans(&paths.home, &acc.credentials, acc.config.as_ref(), Some(mid))
+    }).await
 }
 
 #[derive(serde::Serialize)]
@@ -239,24 +276,26 @@ struct ClaimRefreshResult {
 
 #[tauri::command]
 async fn claim_refresh(id: String, auto: Option<bool>) -> Result<ClaimRefreshResult, String> {
-    let paths = Paths::detect();
-    let mid = store::ensure_virtual_device_mid(&paths, &id)?;
-    let acc = load_account(&paths, &id)?;
-    let (activated, activation_error) =
-        match claim::telemetry_user_id(&paths.home, &acc.credentials) {
-            Some(uid) => match claim::report_activation_events(&uid, &mid) {
-                Ok(()) => (true, None),
-                Err(e) => (false, Some(e)),
-            },
-            None => (false, None),
-        };
-    if auto.unwrap_or(false) {
-        flowlog::log("auto-claim", "activation", &format!(
-            "account={id} activated={activated} error={}", activation_error.as_deref().unwrap_or("none")
-        ));
-    }
-    let plans = claim::preview_plans(&paths.home, &acc.credentials, acc.config.as_ref(), Some(mid))?;
-    Ok(ClaimRefreshResult { plans, activated, activation_error })
+    blocking(move || {
+        let paths = Paths::detect();
+        let mid = store::ensure_virtual_device_mid(&paths, &id)?;
+        let acc = load_account(&paths, &id)?;
+        let (activated, activation_error) =
+            match claim::telemetry_user_id(&paths.home, &acc.credentials) {
+                Some(uid) => match claim::report_activation_events(&uid, &mid) {
+                    Ok(()) => (true, None),
+                    Err(e) => (false, Some(e)),
+                },
+                None => (false, None),
+            };
+        if auto.unwrap_or(false) {
+            flowlog::log("auto-claim", "activation", &format!(
+                "account={id} activated={activated} error={}", activation_error.as_deref().unwrap_or("none")
+            ));
+        }
+        let plans = claim::preview_plans(&paths.home, &acc.credentials, acc.config.as_ref(), Some(mid))?;
+        Ok(ClaimRefreshResult { plans, activated, activation_error })
+    }).await
 }
 
 #[tauri::command]
@@ -267,41 +306,43 @@ async fn claim_start(
     auto: Option<bool>,
     attempt_id: String,
 ) -> Result<serde_json::Value, String> {
-    if uuid::Uuid::parse_str(&attempt_id).is_err() {
-        return Err(i18n::tr("err.claim.attempt"));
-    }
-    let paths = Paths::detect();
-    let mid = store::ensure_virtual_device_mid(&paths, &id)?;
-    let acc = load_account(&paths, &id)?;
-    let plans = claim::preview_plans(&paths.home, &acc.credentials, acc.config.as_ref(), Some(mid.clone()))?;
-    let plan = plans
-        .iter()
-        .find(|p| p.plan_id == plan_id)
-        .ok_or_else(|| i18n::tr("err.claim.gone"))?;
-    let display = if plan.name.is_empty() { plan.plan_id.clone() } else { plan.name.clone() };
+    blocking(move || {
+        if uuid::Uuid::parse_str(&attempt_id).is_err() {
+            return Err(i18n::tr("err.claim.attempt"));
+        }
+        let paths = Paths::detect();
+        let mid = store::ensure_virtual_device_mid(&paths, &id)?;
+        let acc = load_account(&paths, &id)?;
+        let plans = claim::preview_plans(&paths.home, &acc.credentials, acc.config.as_ref(), Some(mid.clone()))?;
+        let plan = plans
+            .iter()
+            .find(|p| p.plan_id == plan_id)
+            .ok_or_else(|| i18n::tr("err.claim.gone"))?;
+        let display = if plan.name.is_empty() { plan.plan_id.clone() } else { plan.name.clone() };
 
-    let started = pending_guard().start(attempt_id.clone(), PendingClaim {
-        account_id: acc.id.clone(),
-        account_name: acc.name.clone(),
-        plan_id: plan.plan_id.clone(),
-        plan_name: display.clone(),
-        credentials: acc.credentials,
-        config: acc.config,
-        device_mid: mid,
-    });
-    if !started {
-        return Err(i18n::tr("err.claim.busy"));
-    }
-    if let Err(e) = open_captcha_window(&app, auto.unwrap_or(false), &attempt_id) {
-        pending_guard().cancel(&attempt_id);
-        return Err(e);
-    }
-    Ok(json!({ "account": acc.name, "plan": display, "attemptId": attempt_id }))
+        let started = pending_guard().start(attempt_id.clone(), PendingClaim {
+            account_id: acc.id.clone(),
+            account_name: acc.name.clone(),
+            plan_id: plan.plan_id.clone(),
+            plan_name: display.clone(),
+            credentials: acc.credentials,
+            config: acc.config,
+            device_mid: mid,
+        });
+        if !started {
+            return Err(i18n::tr("err.claim.busy"));
+        }
+        if let Err(e) = open_captcha_window(&app, auto.unwrap_or(false), &attempt_id) {
+            pending_guard().cancel(&attempt_id);
+            return Err(e);
+        }
+        Ok(json!({ "account": acc.name, "plan": display, "attemptId": attempt_id }))
+    }).await
 }
 
 #[tauri::command]
 async fn claim_captcha_config() -> Result<claim::CaptchaConfig, String> {
-    claim::fetch_captcha_config()
+    blocking(|| claim::fetch_captcha_config()).await
 }
 
 #[tauri::command]
@@ -311,58 +352,60 @@ async fn claim_captcha_submit(
     region: Option<String>,
     attempt_id: String,
 ) -> Result<serde_json::Value, String> {
-    let pending = pending_guard().submit(&attempt_id).ok_or_else(|| i18n::tr("err.claim.none_pending"))?;
-    let paths = Paths::detect();
-    let res = claim::submit_claim(
-        &paths.home,
-        &pending.credentials,
-        pending.config.as_ref(),
-        &pending.plan_id,
-        &param,
-        region.as_deref(),
-        Some(pending.device_mid),
-    );
-    let completed = pending_guard().cancel(&attempt_id);
-    if completed {
-        close_captcha_window(&app, &attempt_id);
-    }
-    let payload = match res {
-        Ok(v) => {
-            let ms = |k: &str| -> Option<i64> {
-                v.pointer(&format!("/data/plan/{k}"))
+    blocking(move || {
+        let pending = pending_guard().submit(&attempt_id).ok_or_else(|| i18n::tr("err.claim.none_pending"))?;
+        let paths = Paths::detect();
+        let res = claim::submit_claim(
+            &paths.home,
+            &pending.credentials,
+            pending.config.as_ref(),
+            &pending.plan_id,
+            &param,
+            region.as_deref(),
+            Some(pending.device_mid),
+        );
+        let completed = pending_guard().cancel(&attempt_id);
+        if completed {
+            close_captcha_window(&app, &attempt_id);
+        }
+        let payload = match res {
+            Ok(v) => {
+                let ms = |k: &str| -> Option<i64> {
+                    v.pointer(&format!("/data/plan/{k}"))
+                        .and_then(|x| x.as_i64())
+                        .map(|s| s * 1000)
+                };
+                let server_time = v
+                    .pointer("/data/server_time")
                     .and_then(|x| x.as_i64())
-                    .map(|s| s * 1000)
-            };
-            let server_time = v
-                .pointer("/data/server_time")
-                .and_then(|x| x.as_i64())
-                .map(|s| s * 1000);
-            let outcome = claim::ClaimOutcome {
-                account_id: pending.account_id.clone(),
-                account_name: pending.account_name.clone(),
-                plan_name: pending.plan_name.clone(),
-                starts_at: ms("starts_at"),
-                ends_at: ms("ends_at"),
-                server_time,
-            };
-            let mut p = serde_json::to_value(&outcome).unwrap_or(Value::Null);
-            p["attemptId"] = json!(attempt_id);
-            if completed { let _ = app.emit("claim://result", &p); }
-            p
-        }
-        Err(e) => {
-            let mut p = claim::failure_payload(
-                &pending.account_id,
-                &pending.account_name,
-                &pending.plan_name,
-                &e,
-            );
-            p["attemptId"] = json!(attempt_id);
-            if completed { let _ = app.emit("claim://result", &p); }
-            return Ok(p);
-        }
-    };
-    Ok(payload)
+                    .map(|s| s * 1000);
+                let outcome = claim::ClaimOutcome {
+                    account_id: pending.account_id.clone(),
+                    account_name: pending.account_name.clone(),
+                    plan_name: pending.plan_name.clone(),
+                    starts_at: ms("starts_at"),
+                    ends_at: ms("ends_at"),
+                    server_time,
+                };
+                let mut p = serde_json::to_value(&outcome).unwrap_or(Value::Null);
+                p["attemptId"] = json!(attempt_id);
+                if completed { let _ = app.emit("claim://result", &p); }
+                p
+            }
+            Err(e) => {
+                let mut p = claim::failure_payload(
+                    &pending.account_id,
+                    &pending.account_name,
+                    &pending.plan_name,
+                    &e,
+                );
+                p["attemptId"] = json!(attempt_id);
+                if completed { let _ = app.emit("claim://result", &p); }
+                return Ok(p);
+            }
+        };
+        Ok(payload)
+    }).await
 }
 
 #[tauri::command]
@@ -376,14 +419,18 @@ async fn claim_cancel(app: AppHandle, attempt_id: String) -> Result<(), String> 
 
 #[tauri::command]
 async fn claim_cooldowns() -> Result<claim_state::Cooldowns, String> {
-    let _guard = store_guard();
-    claim_state::load(&Paths::detect(), chrono::Utc::now().timestamp_millis().max(0) as u64)
+    blocking(|| {
+        let _guard = store_guard();
+        claim_state::load(&Paths::detect(), chrono::Utc::now().timestamp_millis().max(0) as u64)
+    }).await
 }
 
 #[tauri::command]
 async fn claim_set_cooldown(id: String, until: u64) -> Result<(), String> {
-    let _guard = store_guard();
-    claim_state::set(&Paths::detect(), id, until, chrono::Utc::now().timestamp_millis().max(0) as u64)
+    blocking(move || {
+        let _guard = store_guard();
+        claim_state::set(&Paths::detect(), id, until, chrono::Utc::now().timestamp_millis().max(0) as u64)
+    }).await
 }
 
 fn close_captcha_window(app: &AppHandle, attempt_id: &str) {
@@ -426,25 +473,29 @@ fn cancel_oauth_flow(pending: &mut Option<PendingOAuth>, flow: Option<&str>) -> 
 
 #[tauri::command]
 async fn oauth_cancel(app: AppHandle, flow: Option<String>) -> Result<(), String> {
-    let _lock = store_guard();
-    if cancel_oauth_flow(&mut pending_oauth_guard(), flow.as_deref()) {
-        if let Some(w) = app.get_webview_window("login") { let _ = w.close(); }
-    }
-    Ok(())
+    blocking(move || {
+        let _lock = store_guard();
+        if cancel_oauth_flow(&mut pending_oauth_guard(), flow.as_deref()) {
+            if let Some(w) = app.get_webview_window("login") { let _ = w.close(); }
+        }
+        Ok(())
+    }).await
 }
 
 #[tauri::command]
 async fn set_login_method(app: AppHandle, method: String) -> Result<(), String> {
-    if method != "browser" && method != "in-app" { return Err(i18n::tr("err.oauth.login_method")); }
-    {
-        let _lock = store_guard();
-        let paths = Paths::detect();
-        let mut settings = load_settings(&paths);
-        settings.login_method = Some(method);
-        save_settings(&paths, &settings)?;
-    }
-    let _ = app.emit("state-changed", ());
-    Ok(())
+    blocking(move || {
+        if method != "browser" && method != "in-app" { return Err(i18n::tr("err.oauth.login_method")); }
+        {
+            let _lock = store_guard();
+            let paths = Paths::detect();
+            let mut settings = load_settings(&paths);
+            settings.login_method = Some(method);
+            save_settings(&paths, &settings)?;
+        }
+        let _ = app.emit("state-changed", ());
+        Ok(())
+    }).await
 }
 
 #[tauri::command]
@@ -454,6 +505,10 @@ async fn oauth_providers() -> Result<Vec<oauth::OAuthProvider>, String> {
 
 #[tauri::command]
 async fn oauth_begin(app: AppHandle, provider: String) -> Result<serde_json::Value, String> {
+    blocking(move || oauth_begin_inner(app, provider)).await
+}
+
+fn oauth_begin_inner(app: AppHandle, provider: String) -> Result<serde_json::Value, String> {
     if !oauth::OAUTH_PROVIDERS.iter().any(|p| p.id == provider) {
         return Err(i18n::trf("err.oauth.unknown_provider", &[("provider", &provider)]));
     }
@@ -474,21 +529,12 @@ async fn oauth_begin(app: AppHandle, provider: String) -> Result<serde_json::Val
     }
     flowlog::log(&flow, "begin", &format!("provider={provider} proxy={}", if proxy_url.is_some() { "on" } else { "off" }));
     let mid = uuid::Uuid::new_v4().to_string();
-    let (p_init, m_init) = (provider.clone(), mid.clone());
-    let init = match tauri::async_runtime::spawn_blocking(move || oauth::init_flow(&p_init, &m_init))
-        .await
-    {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => {
+    let init = match oauth::init_flow(&provider, &mid) {
+        Ok(v) => v,
+        Err(e) => {
             cancel_oauth_flow(&mut pending_oauth_guard(), Some(&flow));
             flowlog::log(&flow, "init-fail", &e);
             return Err(e);
-        }
-        Err(e) => {
-            cancel_oauth_flow(&mut pending_oauth_guard(), Some(&flow));
-            let m = i18n::trf("err.oauth.flow", &[("e", &e.to_string())]);
-            flowlog::log(&flow, "init-fail", &m);
-            return Err(m);
         }
     };
     {
@@ -607,24 +653,26 @@ fn sweep_login_profiles(root: &std::path::Path) {
 
 #[tauri::command]
 async fn set_auth_proxy(app: AppHandle, on: bool, url: Option<String>) -> Result<(), String> {
-    {
-        let _guard = store_guard();
-        let paths = Paths::detect();
-        let trimmed = url.as_deref().map(str::trim).filter(|s| !s.is_empty());
-        let normalized = match trimmed {
-            Some(s) => Some(oauth::parse_proxy_url(s)?),
-            None => None,
-        };
-        if on && normalized.is_none() {
-            return Err(i18n::tr("err.proxy.need_url"));
+    blocking(move || {
+        {
+            let _guard = store_guard();
+            let paths = Paths::detect();
+            let trimmed = url.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            let normalized = match trimmed {
+                Some(s) => Some(oauth::parse_proxy_url(s)?),
+                None => None,
+            };
+            if on && normalized.is_none() {
+                return Err(i18n::tr("err.proxy.need_url"));
+            }
+            let mut s = load_settings(&paths);
+            s.auth_proxy_on = Some(on);
+            s.auth_proxy_url = normalized;
+            save_settings(&paths, &s)?;
         }
-        let mut s = load_settings(&paths);
-        s.auth_proxy_on = Some(on);
-        s.auth_proxy_url = normalized;
-        save_settings(&paths, &s)?;
-    }
-    let _ = app.emit("state-changed", ());
-    Ok(())
+        let _ = app.emit("state-changed", ());
+        Ok(())
+    }).await
 }
 
 async fn finish_oauth(app: &AppHandle, provider: String, state: String, flow: String, mid: String, callback_url: &str) {
@@ -933,10 +981,12 @@ fn open_captcha_window(app: &AppHandle, auto: bool, attempt_id: &str) -> Result<
 
 #[tauri::command]
 async fn kill_zcode(app: AppHandle) -> Result<(), String> {
-    let _guard = store_guard();
-    let r = if store::kill_zcode()? { Ok(()) } else { Err(i18n::tr("err.zcode.kill_timeout")) };
-    rebuild_tray(&app);
-    r
+    blocking(move || {
+        let _guard = store_guard();
+        let r = if store::kill_zcode()? { Ok(()) } else { Err(i18n::tr("err.zcode.kill_timeout")) };
+        rebuild_tray(&app);
+        r
+    }).await
 }
 
 #[tauri::command]
@@ -947,47 +997,51 @@ async fn set_behavior(
     hot_switch: Option<bool>,
     auto_claim: Option<bool>,
 ) -> Result<(), String> {
-    let _guard = store_guard();
-    let paths = Paths::detect();
-    let mut s = load_settings(&paths);
-    if let Some(v) = launch_after_switch {
-        s.launch_after_switch = Some(v);
-    }
-    if let Some(v) = close_to_tray {
-        s.close_to_tray = Some(v);
-    }
-    if let Some(v) = hot_switch {
-        s.hot_switch = Some(v);
-    }
-    if let Some(v) = auto_claim {
-        s.auto_claim = Some(v);
-    }
-    let r = save_settings(&paths, &s);
-    rebuild_tray(&app);
-    let _ = app.emit("state-changed", ());
-    r
+    blocking(move || {
+        let _guard = store_guard();
+        let paths = Paths::detect();
+        let mut s = load_settings(&paths);
+        if let Some(v) = launch_after_switch {
+            s.launch_after_switch = Some(v);
+        }
+        if let Some(v) = close_to_tray {
+            s.close_to_tray = Some(v);
+        }
+        if let Some(v) = hot_switch {
+            s.hot_switch = Some(v);
+        }
+        if let Some(v) = auto_claim {
+            s.auto_claim = Some(v);
+        }
+        let r = save_settings(&paths, &s);
+        rebuild_tray(&app);
+        let _ = app.emit("state-changed", ());
+        r
+    }).await
 }
 
 #[tauri::command]
 async fn set_language(app: AppHandle, lang: String) -> Result<(), String> {
-    let l = i18n::Lang::parse(&lang)
-        .ok_or_else(|| i18n::trf("err.lang.unknown", &[("lang", &lang)]))?;
-    {
-        let _guard = store_guard();
-        let paths = Paths::detect();
-        let mut s = load_settings(&paths);
-        s.language = Some(l.as_str().to_string());
-        save_settings(&paths, &s)?;
-    }
-    i18n::set(l);
-    rebuild_tray(&app);
-    for (label, key) in [("settings", "title.settings"), ("captcha", "title.captcha"), ("login", "title.login")] {
-        if let Some(w) = app.get_webview_window(label) {
-            let _ = w.set_title(&i18n::tr(key));
+    blocking(move || {
+        let l = i18n::Lang::parse(&lang)
+            .ok_or_else(|| i18n::trf("err.lang.unknown", &[("lang", &lang)]))?;
+        {
+            let _guard = store_guard();
+            let paths = Paths::detect();
+            let mut s = load_settings(&paths);
+            s.language = Some(l.as_str().to_string());
+            save_settings(&paths, &s)?;
         }
-    }
-    let _ = app.emit("state-changed", ());
-    Ok(())
+        i18n::set(l);
+        rebuild_tray(&app);
+        for (label, key) in [("settings", "title.settings"), ("captcha", "title.captcha"), ("login", "title.login")] {
+            if let Some(w) = app.get_webview_window(label) {
+                let _ = w.set_title(&i18n::tr(key));
+            }
+        }
+        let _ = app.emit("state-changed", ());
+        Ok(())
+    }).await
 }
 
 #[tauri::command]
@@ -1041,184 +1095,206 @@ fn center_over_main(app: &AppHandle, win: &tauri::WebviewWindow, w: f64, h: f64)
 
 #[tauri::command]
 async fn autostart_status(app: AppHandle) -> Result<bool, String> {
-    let al = app.state::<AutoLaunchManager>();
-    al.is_enabled().map_err(|e| e.to_string())
+    blocking(move || {
+        let al = app.state::<AutoLaunchManager>();
+        al.is_enabled().map_err(|e| e.to_string())
+    }).await
 }
 
 #[tauri::command]
 async fn autostart_set(app: AppHandle, enable: bool) -> Result<bool, String> {
-    let al = app.state::<AutoLaunchManager>();
-    if enable {
-        al.enable().map_err(|e| e.to_string())?;
-    } else {
-        al.disable().map_err(|e| e.to_string())?;
-    }
-    al.is_enabled().map_err(|e| e.to_string())
+    blocking(move || {
+        let al = app.state::<AutoLaunchManager>();
+        if enable {
+            al.enable().map_err(|e| e.to_string())?;
+        } else {
+            al.disable().map_err(|e| e.to_string())?;
+        }
+        al.is_enabled().map_err(|e| e.to_string())
+    }).await
 }
 
 #[tauri::command]
 async fn export_pick_path(app: AppHandle, id: String) -> Result<serde_json::Value, String> {
-    let acc = load_account(&Paths::detect(), &id)?;
-    let default_name = format!("{}.zsb", sanitize_filename(&acc.name));
-    let picked = app
-        .dialog()
-        .file()
-        .add_filter(&i18n::tr("dialog.zsb"), &["zsb"])
-        .set_file_name(&default_name)
-        .blocking_save_file();
-    let Some(fp) = picked else {
-        return Ok(json!({ "picked": false }));
-    };
-    let path = fp.into_path().map_err(|e| i18n::trf("err.path.invalid", &[("e", &e.to_string())]))?;
-    Ok(json!({ "picked": true, "path": path.to_string_lossy(), "name": acc.name }))
+    blocking(move || {
+        let acc = load_account(&Paths::detect(), &id)?;
+        let default_name = format!("{}.zsb", sanitize_filename(&acc.name));
+        let picked = app
+            .dialog()
+            .file()
+            .add_filter(&i18n::tr("dialog.zsb"), &["zsb"])
+            .set_file_name(&default_name)
+            .blocking_save_file();
+        let Some(fp) = picked else {
+            return Ok(json!({ "picked": false }));
+        };
+        let path = fp.into_path().map_err(|e| i18n::trf("err.path.invalid", &[("e", &e.to_string())]))?;
+        Ok(json!({ "picked": true, "path": path.to_string_lossy(), "name": acc.name }))
+    }).await
 }
 
 #[tauri::command]
 async fn export_finalize(path: String, id: String, password: String) -> Result<serde_json::Value, String> {
-    let acc = load_account(&Paths::detect(), &id)?;
-    let payload = store::export_bundle_value(&Paths::detect(), std::slice::from_ref(&acc))?;
-    let sealed = cipher::seal(&payload, &password, cipher::FORMAT_BUNDLE)?;
-    let body = serde_json::to_string_pretty(&sealed).unwrap() + "\n";
-    store::atomic_write(std::path::Path::new(&path), &body).map_err(|e| i18n::trf("err.write", &[("e", &e.to_string())]))?;
-    Ok(json!({ "saved": true, "path": path }))
+    blocking(move || {
+        let acc = load_account(&Paths::detect(), &id)?;
+        let payload = store::export_bundle_value(&Paths::detect(), std::slice::from_ref(&acc))?;
+        let sealed = cipher::seal(&payload, &password, cipher::FORMAT_BUNDLE)?;
+        let body = serde_json::to_string_pretty(&sealed).unwrap() + "\n";
+        store::atomic_write(std::path::Path::new(&path), &body).map_err(|e| i18n::trf("err.write", &[("e", &e.to_string())]))?;
+        Ok(json!({ "saved": true, "path": path }))
+    }).await
 }
 
 #[tauri::command]
 async fn export_all_pick_path(app: AppHandle) -> Result<serde_json::Value, String> {
-    let accounts = list_accounts(&Paths::detect())?;
-    if accounts.is_empty() {
-        return Err(i18n::tr("err.export.empty"));
-    }
-    let picked = app
-        .dialog()
-        .file()
-        .add_filter(&i18n::tr("dialog.zsb"), &["zsb"])
-        .set_file_name("zcode-accounts.zsb")
-        .blocking_save_file();
-    let Some(fp) = picked else {
-        return Ok(json!({ "picked": false }));
-    };
-    let path = fp.into_path().map_err(|e| i18n::trf("err.path.invalid", &[("e", &e.to_string())]))?;
-    Ok(json!({ "picked": true, "path": path.to_string_lossy(), "count": accounts.len() }))
+    blocking(move || {
+        let accounts = list_accounts(&Paths::detect())?;
+        if accounts.is_empty() {
+            return Err(i18n::tr("err.export.empty"));
+        }
+        let picked = app
+            .dialog()
+            .file()
+            .add_filter(&i18n::tr("dialog.zsb"), &["zsb"])
+            .set_file_name("zcode-accounts.zsb")
+            .blocking_save_file();
+        let Some(fp) = picked else {
+            return Ok(json!({ "picked": false }));
+        };
+        let path = fp.into_path().map_err(|e| i18n::trf("err.path.invalid", &[("e", &e.to_string())]))?;
+        Ok(json!({ "picked": true, "path": path.to_string_lossy(), "count": accounts.len() }))
+    }).await
 }
 
 #[tauri::command]
 async fn export_all_finalize(path: String, password: String) -> Result<serde_json::Value, String> {
-    let accounts = list_accounts(&Paths::detect())?;
-    if accounts.is_empty() {
-        return Err(i18n::tr("err.export.empty_short"));
-    }
-    let report = store::export_all_to_file(&Paths::detect(), &accounts, &password, std::path::Path::new(&path))?;
-    Ok(json!({ "saved": true, "path": path, "count": report.count, "skipped": report.skipped }))
+    blocking(move || {
+        let accounts = list_accounts(&Paths::detect())?;
+        if accounts.is_empty() {
+            return Err(i18n::tr("err.export.empty_short"));
+        }
+        let report = store::export_all_to_file(&Paths::detect(), &accounts, &password, std::path::Path::new(&path))?;
+        Ok(json!({ "saved": true, "path": path, "count": report.count, "skipped": report.skipped }))
+    }).await
 }
 
 #[tauri::command]
 async fn import_pick_files(app: AppHandle) -> Result<serde_json::Value, String> {
-    let picked = app
-        .dialog()
-        .file()
-        .add_filter(&i18n::tr("dialog.zsb"), &["zsb"])
-        .blocking_pick_files();
-    let Some(files) = picked else {
-        return Ok(json!({ "picked": false }));
-    };
-    let mut sealed = vec![];
-    let mut errors = vec![];
-    for fp in files {
-        let path = match fp.into_path() {
-            Ok(p) => p,
-            Err(e) => {
-                errors.push(i18n::trf("err.path.conv", &[("e", &e.to_string())]));
-                continue;
-            }
+    blocking(move || {
+        let picked = app
+            .dialog()
+            .file()
+            .add_filter(&i18n::tr("dialog.zsb"), &["zsb"])
+            .blocking_pick_files();
+        let Some(files) = picked else {
+            return Ok(json!({ "picked": false }));
         };
-        let fname = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(r) => r,
-            Err(e) => {
-                errors.push(i18n::trf("err.import.read", &[("fname", fname.as_str()), ("e", &e.to_string())]));
-                continue;
-            }
-        };
-        match serde_json::from_str::<Value>(&raw) {
-            Ok(v) => {
-                if !cipher::is_sealed(&v) {
-                    errors.push(i18n::trf("err.import.not_sealed", &[("fname", fname.as_str())]));
-                } else if v.get("format").and_then(|f| f.as_str()) != Some(cipher::FORMAT_BUNDLE) {
-                    errors.push(i18n::trf("err.import.not_bundle", &[("fname", fname.as_str())]));
-                } else {
-                    sealed.push((fname, v));
+        let mut sealed = vec![];
+        let mut errors = vec![];
+        for fp in files {
+            let path = match fp.into_path() {
+                Ok(p) => p,
+                Err(e) => {
+                    errors.push(i18n::trf("err.path.conv", &[("e", &e.to_string())]));
+                    continue;
                 }
+            };
+            let fname = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let raw = match std::fs::read_to_string(&path) {
+                Ok(r) => r,
+                Err(e) => {
+                    errors.push(i18n::trf("err.import.read", &[("fname", fname.as_str()), ("e", &e.to_string())]));
+                    continue;
+                }
+            };
+            match serde_json::from_str::<Value>(&raw) {
+                Ok(v) => {
+                    if !cipher::is_sealed(&v) {
+                        errors.push(i18n::trf("err.import.not_sealed", &[("fname", fname.as_str())]));
+                    } else if v.get("format").and_then(|f| f.as_str()) != Some(cipher::FORMAT_BUNDLE) {
+                        errors.push(i18n::trf("err.import.not_bundle", &[("fname", fname.as_str())]));
+                    } else {
+                        sealed.push((fname, v));
+                    }
+                }
+                Err(e) => errors.push(i18n::trf("err.import.json", &[("fname", fname.as_str()), ("e", &e.to_string())])),
             }
-            Err(e) => errors.push(i18n::trf("err.import.json", &[("fname", fname.as_str()), ("e", &e.to_string())])),
         }
-    }
-    Ok(json!({ "picked": true, "sealed": sealed, "errors": errors }))
+        Ok(json!({ "picked": true, "sealed": sealed, "errors": errors }))
+    }).await
 }
 
 #[tauri::command]
 async fn import_sealed(app: AppHandle, files: Vec<(String, Value)>, password: String) -> Result<ImportReport, String> {
-    let _guard = store_guard();
-    let mut decrypted = vec![];
-    let mut errors = vec![];
-    for (fname, v) in files {
-        match cipher::open(&v, &password) {
-            Ok(payload) => decrypted.push((fname, payload)),
-            Err(e) => errors.push(i18n::trf("err.import.wrap", &[("fname", fname.as_str()), ("e", &e)])),
+    blocking(move || {
+        let _guard = store_guard();
+        let mut decrypted = vec![];
+        let mut errors = vec![];
+        for (fname, v) in files {
+            match cipher::open(&v, &password) {
+                Ok(payload) => decrypted.push((fname, payload)),
+                Err(e) => errors.push(i18n::trf("err.import.wrap", &[("fname", fname.as_str()), ("e", &e)])),
+            }
         }
-    }
-    let mut report = if decrypted.is_empty() || !errors.is_empty() {
-        ImportReport::default()
-    } else {
-        import_values(&Paths::detect(), &decrypted)?
-    };
-    report.picked = true;
-    report.errors.extend(errors);
-    rebuild_tray(&app);
-    Ok(report)
+        let mut report = if decrypted.is_empty() || !errors.is_empty() {
+            ImportReport::default()
+        } else {
+            import_values(&Paths::detect(), &decrypted)?
+        };
+        report.picked = true;
+        report.errors.extend(errors);
+        rebuild_tray(&app);
+        Ok(report)
+    }).await
 }
 
 #[tauri::command]
 async fn pick_zcode_path(app: AppHandle) -> Result<serde_json::Value, String> {
-    let picked = app
-        .dialog()
-        .file()
-        .add_filter(&i18n::tr("dialog.exe"), &["exe"])
-        .blocking_pick_file();
-    let Some(fp) = picked else {
-        return Ok(json!({ "picked": false }));
-    };
-    let path = fp.into_path().map_err(|e| i18n::trf("err.path.invalid", &[("e", &e.to_string())]))?;
-    Ok(json!({ "picked": true, "path": path.to_string_lossy() }))
+    blocking(move || {
+        let picked = app
+            .dialog()
+            .file()
+            .add_filter(&i18n::tr("dialog.exe"), &["exe"])
+            .blocking_pick_file();
+        let Some(fp) = picked else {
+            return Ok(json!({ "picked": false }));
+        };
+        let path = fp.into_path().map_err(|e| i18n::trf("err.path.invalid", &[("e", &e.to_string())]))?;
+        Ok(json!({ "picked": true, "path": path.to_string_lossy() }))
+    }).await
 }
 
 #[tauri::command]
 async fn set_zcode_path(app: AppHandle, path: String) -> Result<(), String> {
-    let _guard = store_guard();
-    let paths = Paths::detect();
-    let mut s = load_settings(&paths);
-    s.zcode_path = store::normalize_zcode_path(&path);
-    let r = save_settings(&paths, &s);
-    rebuild_tray(&app);
-    let _ = app.emit("state-changed", ());
-    r
+    blocking(move || {
+        let _guard = store_guard();
+        let paths = Paths::detect();
+        let mut s = load_settings(&paths);
+        s.zcode_path = store::normalize_zcode_path(&path);
+        let r = save_settings(&paths, &s);
+        rebuild_tray(&app);
+        let _ = app.emit("state-changed", ());
+        r
+    }).await
 }
 
 #[tauri::command]
 async fn launch_zcode(app: AppHandle) -> Result<(), String> {
-    let paths = Paths::detect();
-    let (p, ok) = effective_zcode_path(&paths);
-    if !ok {
-        return Err(i18n::trf("err.zcode.path_invalid_hint", &[("p", &p)]));
-    }
-    let r = store::launch_zcode(&p);
-    rebuild_tray(&app);
-    r
+    blocking(move || {
+        let paths = Paths::detect();
+        let (p, ok) = effective_zcode_path(&paths);
+        if !ok {
+            return Err(i18n::trf("err.zcode.path_invalid_hint", &[("p", &p)]));
+        }
+        let r = store::launch_zcode(&p);
+        rebuild_tray(&app);
+        r
+    }).await
 }
 
 #[tauri::command]
 async fn open_external(url: String) -> Result<(), String> {
-    store::open_url(&url)
+    blocking(move || store::open_url(&url)).await
 }
 
 #[tauri::command]
@@ -1307,7 +1383,7 @@ pub fn run() {
             let _tray = TrayIconBuilder::with_id(TRAY_ID)
                 .icon(app.default_window_icon().expect("no window icon").clone())
                 .tooltip("Z·SWITCH")
-                .menu(&tray_menu_inner(app.handle())?)
+                .menu(&tray_menu_inner(app.handle(), None)?)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| {
                     let id = event.id().as_ref().to_string();
@@ -1323,6 +1399,7 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            rebuild_tray(app.handle());
 
             Ok(())
         })
