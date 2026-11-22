@@ -6,6 +6,7 @@ import { init, t, has, lang, localeTag, stripErr, errCode } from "./i18n.js";
 import { filterAccounts, bindAccountSearch } from "./account-search.js";
 import { pickClaimPlan } from "./claim-plan-picker.js";
 import { openBrowserLogin, closeBrowserLogin } from "./browser-login.js";
+import { createStateReader, startStatePolling } from "./state-polling.js";
 
 const $app = document.getElementById("app");
 let state = null;
@@ -61,9 +62,13 @@ function idLabel(id) {
   return id.display_name || id.username || id.email || null;
 }
 
-async function refresh() {
-  state = await invoke("get_state");
+const stateReader = createStateReader(() => invoke("get_state"), (next) => {
+  state = next;
   if (state?.language) init(state.language);
+});
+
+async function refresh() {
+  await stateReader.refresh();
 }
 
 function uiLocked() {
@@ -1088,9 +1093,11 @@ async function sweepTick() {
     setTimeout(dismissSplash, 350);
     enrollAccounts();
     sweepTick();
-    setInterval(() => {
-      invoke("get_state").then((s) => { state = s; if (s?.language) init(s.language); enrollAccounts(); if (!uiLocked()) render(); }).catch(() => {});
-    }, 5000);
+    startStatePolling({
+      read: () => stateReader.poll(),
+      updated: () => { enrollAccounts(); if (!uiLocked()) render(); },
+      document, window, setInterval, clearInterval,
+    });
     setInterval(sweepTick, TICK_MS);
     setTimeout(autoClaimTick, AUTO_CLAIM_FIRST_DELAY_MS);
     setInterval(autoClaimTick, AUTO_CLAIM_INTERVAL_MS);

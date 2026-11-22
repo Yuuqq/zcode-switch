@@ -12,6 +12,10 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+#[cfg(test)]
+#[path = "state_benchmark.rs"]
+mod state_benchmark;
+
 #[cfg(windows)]
 fn no_window(prog: &str) -> std::process::Command {
     use std::os::windows::process::CommandExt;

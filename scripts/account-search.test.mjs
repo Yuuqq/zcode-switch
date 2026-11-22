@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import { bindAccountSearch, filterAccounts } from "../src/account-search.js";
+import { createStateReader } from "../src/state-polling.js";
 
 const accounts = [
   { id: "a", name: "工作账号", is_active: true, jwt_expired: true, identity: { username: "Alice", email: "Alice@Example.com", user_id: "user-42", provider: "bigmodel" } },
@@ -74,7 +75,7 @@ test("main render retains the query, focus, active/error badges, counts and empt
   };
   document.getElementById = () => app;
   const context = vm.createContext({
-    document, window: {}, filterAccounts, bindAccountSearch,
+    document, window: {}, filterAccounts, bindAccountSearch, createStateReader,
     installDelegation() {}, listen: async () => {}, ic: () => "", esc: (s) => String(s ?? ""),
     t: (key, params) => params ? `${key}:${JSON.stringify(params)}` : key,
     invoke: async () => ({ accounts, language: "en" }), init() {},
