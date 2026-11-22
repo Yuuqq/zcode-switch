@@ -39,7 +39,6 @@ in place, not copied: retain the checkout and `git pull` it to update, then
 reload/restart Magpie. `magpie plugin add github:Yuuqq/zcode-switch` installs
 the repository root (the desktop app), **not this package**. No Git-subdirectory
 syntax is documented/supported by Magpie's installer; use the local path above.
-Until this branch is merged, check out the plugin branch before adding it.
 
 In Magpie add a **ZCode Switch** provider account. Choose a named account
 (email and immutable ID are displayed), all accounts, or selected IDs separated
@@ -128,7 +127,7 @@ magpie plugin add "$(pwd)/zcode-switch/magpie-plugin"
 Windows PowerShell：`magpie plugin add (Resolve-Path .\zcode-switch\magpie-plugin).Path`。
 必须使用本地子目录的绝对路径；`github:Yuuqq/zcode-switch` 指向桌面应用根目录，
 不能安装这个子包。Magpie 安装器没有明确支持的 Git 子目录语法。保留克隆目录，
-用 `git pull` 更新后重载/重启 Magpie。合并前先切换到包含插件的分支。
+用 `git pull` 更新后重载/重启 Magpie。
 
 添加 ZCode Switch 提供商账号时，可选择单个账号、全部账号或输入逗号分隔的多个
 不可变账号 ID；列表显示名称、邮箱及 ID。每个来源 ID 对应一个稳定的 Magpie

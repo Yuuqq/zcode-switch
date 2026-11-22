@@ -9,11 +9,13 @@ A Tauri 2 desktop tool for one-click switching between multiple ZCode accounts, 
 ## Features
 
 - **Save / switch accounts**: one-click login switching; the current login is auto-preserved before any switch — accounts are never lost
-- **Add accounts**: OAuth login for new accounts inside the tool (BigModel / z.ai entries), never touching the current login
+- **Add accounts**: OAuth login for new accounts (BigModel / z.ai entries), never touching the current login; uses the system browser by default (cancellable, with reopen/copy link), or an in-app login window selectable in Settings
+- **Account search**: filter the list by name, email, identity or provider; Esc clears it. Claim all and refresh still cover every account
 - **Quota display**: inline plan quota and reset time per account row, multi-plan grouping
-- **Claim promotions**: one-click claim for eligible promotions; "Auto claim" toggle (off by default) checks and claims periodically — manual actions take priority
+- **Claim promotions**: one-click claim for eligible promotions, with a plan picker when one account has several eligible plans; "Auto claim" toggle (off by default) checks and claims periodically — manual actions take priority
 - **Encrypted import / export**: `.zsb` bundle, PBKDF2(100k) + AES-256-GCM password encryption
 - **Bilingual UI (中文 / English)**: one-click switch in Settings — main window, tray, error messages and CLI output all covered; first run follows your OS language
+- **Connectivity diagnostics**: test reachability of login and backend hosts from Settings, direct or through the entered proxy (HEAD requests only; no settings change)
 - **Tray / autostart / CLI automation**
 
 ### Magpie integration
@@ -30,6 +32,8 @@ folder with `magpie plugin add /abs/path/zcode-switch-magpie-plugin` (use an
 absolute path, or `./zcode-switch-magpie-plugin` from its parent directory).
 Keep the extracted folder in place while using the plugin.
 
+Settings › Magpie plugin setup & diagnostics links the plugin ZIP for the running app version, shows copyable install steps, and runs read-only checks: decryptable/usable snapshot counts in the account library, `magpie` CLI on PATH, the Magpie config directory, and Node version (20+ required).
+
 ## Security Design
 
 - **Local storage, official services**: account snapshots/settings are stored locally; quota and promotion requests go to official services. Refreshing promotion eligibility (manually or in auto mode) sends `app_launch` / `app_daily_active` events to `https://zcode.z.ai/api/v1/event/report`, as the official client does. These include user/device identifiers and client environment details. No fabricated/randomized activity is added.
@@ -37,14 +41,16 @@ Keep the extracted folder in place while using the plugin.
 - **No account loss**: the current login is auto-preserved before switching if not yet saved; file writes go through a temp file + atomic rename
 - **Path traversal protection**: account id whitelist (`[A-Za-z0-9-]`); delete/read cannot escape the account store directory
 - **Encrypted export**: PBKDF2-HMAC-SHA256 (100k iterations) + AES-256-GCM, random salt/nonce; wrong password simply fails, no plaintext traces
+- **Saved credentials encrypted at rest**: JWTs, OAuth access/refresh tokens and config `apiKey` values in saved accounts are encrypted with the local machine key (`enc:v1:`, AES-256-GCM), matching ZCode's local format; `ZCODE_CREDENTIAL_SECRET` overrides the key
 - **Credentials decrypted locally only**: decryption is used for account operations and portable export; export files are password-encrypted
+- **Login proxy**: applies only to in-app window login; accepts `http://` / `socks5://` `host:port` (no authentication, path or IPv6). System-browser login uses the browser's own network settings
 
 ## Import / export
 
 Export one account from its menu, or export all / import `.zsb` files in Settings. CLI equivalents are listed below.
 
 - GUI and CLI exports require a nonblank password of at least **6 characters**; imports accept any nonblank password, including old short passwords.
-- The encrypted envelope remains version 1 (PBKDF2-HMAC-SHA256, 100,000 iterations; AES-256-GCM). The new version 3 payload decrypts source-local `enc:v1:` values **in memory only**, inside the password-encrypted bundle. Import restores those fields using the destination's local ZCode encryption key. Plain fields remain plain. Export fails if a local encrypted field cannot be decrypted.
+- The encrypted envelope remains version 1 (PBKDF2-HMAC-SHA256, 100,000 iterations; AES-256-GCM). The new version 3 payload decrypts source-local `enc:v1:` values **in memory only**, inside the password-encrypted bundle. Import restores those fields using the destination's local ZCode encryption key. Plain fields remain plain. A single-account export fails with the reason if a local encrypted field cannot be decrypted; export-all skips such accounts and reports each skipped account and reason (the CLI prints them to stderr and in its `skipped` field). If no account can be exported, no file is written.
 - Account names, `createdAt`, credentials and config are retained. IDs and device identities are regenerated when needed; settings, projects and sessions are not exported. Name collisions receive suffixes, including collisions within the same batch. Duplicate credentials are skipped.
 - Version 2 payloads remain readable. Legacy inner ciphertext is decrypted with the local key where possible; otherwise it is retained unchanged with a warning and may not work on this machine. Re-export on the source machine for portability. Older app versions cannot import version 3 payloads.
 - Unknown versions or unsupported encryption metadata are rejected. All selected files are validated before writing. Imports stage account files and roll back newly written files on failure; skipped duplicates do not prevent importing the rest. This is an application-level transaction, not crash/power-loss recovery.
@@ -90,9 +96,12 @@ The embedded pages (such as the login page) are rendered by the system WebView, 
 npm install
 npm run tauri dev      # development (HMR)
 npm run tauri build    # NSIS installer
+npm run dist           # check versions match, build, then copy the installer and portable exe to release/ (Windows)
 ```
 
-Windows-first (path detection / process management / tray are all Win32 semantics).
+Windows-first (path detection / process management / tray are all Win32 semantics). Pushing a `v*` tag makes CI publish Windows (NSIS installer + portable exe), macOS (Apple silicon / Intel `.dmg`) and Linux (`.deb` / `.AppImage`) builds plus the Magpie plugin archives, each with SHA-256 checksum files; tags containing `-` are marked as prereleases.
+
+Tests: `cd src-tauri && cargo test --lib`; `node --test magpie-plugin/test/*.test.mjs`; `npm run check:i18n` checks that zh/en string keys match.
 
 ## License
 
