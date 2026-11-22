@@ -188,6 +188,7 @@ export const zh = {
   "m.emptyBody": "先用下方 <b>保存当前登录</b> 存入第一个账号，或<b>导入</b>账号文件",
   "m.saveLoginDisabledTitle": "当前登录已是存档「{name}」，无需重复保存",
   "m.accounts": "ACCOUNTS · 账号库",
+  "m.brokenAccount": "账号文件已损坏或无法读取：{file}：{error}",
   "m.count": "{count} 个存档",
 
   "btn.saveLogin": "保存登录",

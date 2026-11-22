@@ -546,11 +546,7 @@ fn effective_zcode_path_in(paths: &Paths, candidates: &[String]) -> (String, boo
 }
 
 pub fn list_accounts(paths: &Paths) -> Result<Vec<Account>, String> {
-    let (accounts, broken) = scan_accounts(paths)?;
-    if !broken.is_empty() {
-        return Err(broken.iter().map(|b| format!("{}: {}", b.file, b.error)).collect::<Vec<_>>().join("\n"));
-    }
-    Ok(accounts)
+    scan_accounts(paths).map(|(accounts, _)| accounts)
 }
 
 #[derive(Serialize, Clone, Debug)]

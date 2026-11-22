@@ -86,6 +86,18 @@ pub fn export_bundle_value(paths: &Paths, accounts: &[Account]) -> Result<Value,
     export_with_secret(accounts, &zcrypto::default_secret(&paths.home))
 }
 
+pub fn list_accounts_for_export(paths: &Paths) -> Result<Vec<Account>, String> {
+    let (accounts, broken) = crate::store::scan_accounts(paths)?;
+    if !broken.is_empty() {
+        let files = broken.iter()
+            .map(|b| format!("{}: {}", b.file, b.error))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(trf("err.bundle.corrupt_files", &[("files", &files)]));
+    }
+    Ok(accounts)
+}
+
 fn export_with_secret(accounts: &[Account], secret: &str) -> Result<Value, String> {
     Ok(export_accounts(accounts, secret, false)?.0)
 }
@@ -160,7 +172,7 @@ pub fn export_all_to_file(
     password: &str,
     path: &Path,
 ) -> Result<ExportReport, String> {
-    list_accounts(paths)?;
+    list_accounts_for_export(paths)?;
     let (payload, skipped) =
         export_accounts(accounts, &zcrypto::default_secret(&paths.home), true)?;
     let count = payload["accounts"].as_array().unwrap().len();
@@ -448,7 +460,8 @@ mod tests {
         let state = crate::store::get_state(paths).unwrap();
         assert_eq!(state.accounts.len(), 1);
         assert_eq!(state.broken_accounts.len(), 1);
-        assert!(list_accounts(paths).unwrap_err().contains("broken.json"));
+        assert_eq!(list_accounts(paths).unwrap().len(), 1);
+        assert!(export_bundle_value(paths, &accounts).is_ok());
         let output = paths.home.join("export.zsb");
         let error = export_all_to_file(paths, &accounts, "password", &output).unwrap_err();
         assert!(error.contains("broken.json"));

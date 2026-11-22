@@ -1085,7 +1085,7 @@ async fn export_finalize(path: String, id: String, password: String) -> Result<s
 
 #[tauri::command]
 async fn export_all_pick_path(app: AppHandle) -> Result<serde_json::Value, String> {
-    let accounts = list_accounts(&Paths::detect())?;
+    let accounts = transfer::list_accounts_for_export(&Paths::detect())?;
     if accounts.is_empty() {
         return Err(i18n::tr("err.export.empty"));
     }
@@ -1104,7 +1104,7 @@ async fn export_all_pick_path(app: AppHandle) -> Result<serde_json::Value, Strin
 
 #[tauri::command]
 async fn export_all_finalize(path: String, password: String) -> Result<serde_json::Value, String> {
-    let accounts = list_accounts(&Paths::detect())?;
+    let accounts = transfer::list_accounts_for_export(&Paths::detect())?;
     if accounts.is_empty() {
         return Err(i18n::tr("err.export.empty_short"));
     }
