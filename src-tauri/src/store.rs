@@ -873,6 +873,10 @@ fn probe_config_base(paths: &Paths, target: &Account) -> Option<Value> {
 }
 
 pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool) -> Result<SwitchResult, String> {
+    switch_to_with_running(paths, id, force, restart, hot, zcode_running)
+}
+
+fn switch_to_with_running(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool, is_running: impl Fn() -> bool) -> Result<SwitchResult, String> {
     let target = load_account(paths, id)?;
     let accounts = list_accounts(paths)?;
     let live = read_live(paths)?;
@@ -897,7 +901,7 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
         let mid = ensure_virtual_device_mid_locked(paths, &target.id)?;
         write_live_device_mid(paths, &mid)?;
         let uid = ensure_virtual_arms_uid_locked(paths, &target.id)?;
-        if !zcode_running() {
+        if !is_running() {
             let _ = write_live_arms_uid(paths, &uid);
         }
         return Ok(SwitchResult {
@@ -913,11 +917,10 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
         });
     }
 
-    let running = zcode_running();
+    let running = is_running();
     if hot && running {
-        if let Err(e) = sync_live_back_to_source(paths, &accounts) {
-            eprintln!("sync-back 失败(不阻断切换): {e}");
-        }
+        sync_live_back_to_source(paths, &accounts)
+            .map_err(|e| trf("err.switch.sync_back", &[("e", &e)]))?;
         let accounts = list_accounts(paths)?;
         let preserved_as = auto_preserve(paths, &accounts, &target.hash)?;
         let creds = inject_relay_pass_hash(&target.credentials, current_relay_pass(paths).as_ref());
@@ -952,9 +955,8 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
         killed = true;
     }
 
-    if let Err(e) = sync_live_back_to_source(paths, &accounts) {
-        eprintln!("sync-back 失败(不阻断切换): {e}");
-    }
+    sync_live_back_to_source(paths, &accounts)
+        .map_err(|e| trf("err.switch.sync_back", &[("e", &e)]))?;
     let accounts = list_accounts(paths)?;
 
     let preserved_as = auto_preserve(paths, &accounts, &target.hash)?;
@@ -1483,4 +1485,95 @@ pub fn get_state(paths: &Paths) -> Result<AppState, String> {
         auth_proxy_url: settings.auth_proxy_url.clone(),
         language: crate::i18n::current().as_str().to_string(),
     })
+}
+
+#[cfg(all(test, unix))]
+mod sync_back_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct Fixture(Paths);
+
+    impl Fixture {
+        fn new() -> Self {
+            let home = std::env::temp_dir().join(format!("zsw-sync-back-{}", Uuid::new_v4()));
+            Self(Paths { data_root: home.clone(), home })
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(self.0.accounts_dir(), fs::Permissions::from_mode(0o700));
+            let _ = fs::remove_dir_all(&self.0.home);
+        }
+    }
+
+    fn credentials(id: &str, token: &str) -> Value {
+        json!({"oauth:bigmodel:user_info": json!({"id": id}).to_string(), "zcodejwttoken": token})
+    }
+
+    fn account(id: &str) -> Account {
+        let credentials = credentials(id, "old-token");
+        Account {
+            id: id.into(), name: id.into(), created_at: now_ts(), updated_at: now_ts(),
+            hash: canonical_hash(&credentials), credentials, config: None,
+            config_plaintext_fields: vec![], virtual_device_mid: Some(Uuid::new_v4().to_string()),
+            virtual_arms_uid: Some(new_arms_uid()),
+        }
+    }
+
+    fn assert_failed_sync_back_keeps_live(hot: bool) {
+        let fixture = Fixture::new();
+        let paths = &fixture.0;
+        let source = account("source");
+        let target = account("target");
+        save_account(paths, &source).unwrap();
+        save_account(paths, &target).unwrap();
+        let fresh = credentials("source", "refreshed-token");
+        assert_ne!(canonical_hash(&fresh), source.hash);
+        assert_eq!(find_same_login(&fresh, &canonical_hash(&fresh), &[source], &paths.home), Some(0));
+        write_live(paths, &fresh).unwrap();
+        fs::set_permissions(paths.accounts_dir(), fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(sync_live_back_to_source(paths, &list_accounts(paths).unwrap()).is_err());
+
+        let result = switch_to_with_running(paths, &target.id, false, false, hot, || hot);
+
+        assert_eq!(read_live(paths).unwrap(), Some(fresh), "switch overwrote fresh credentials after sync-back failed");
+        assert!(result.is_err(), "switch must abort when sync-back fails");
+        assert!(result.unwrap_err().contains(&trf("err.switch.sync_back", &[("e", "")])));
+    }
+
+    #[test]
+    fn normal_switch_preserves_live_when_sync_back_fails() {
+        assert_failed_sync_back_keeps_live(false);
+    }
+
+    #[test]
+    fn hot_switch_preserves_live_when_sync_back_fails() {
+        assert_failed_sync_back_keeps_live(true);
+    }
+
+    #[test]
+    fn switches_continue_when_sync_back_succeeds_or_is_unneeded() {
+        for hot in [false, true] {
+            for token in ["old-token", "refreshed-token"] {
+                let fixture = Fixture::new();
+                let paths = &fixture.0;
+                let source = account("source");
+                let target = account("target");
+                save_account(paths, &source).unwrap();
+                save_account(paths, &target).unwrap();
+                let live = credentials("source", token);
+                write_live(paths, &live).unwrap();
+
+                let result = switch_to_with_running(paths, &target.id, false, false, hot, || hot).unwrap();
+
+                assert!(result.switched);
+                assert_eq!(result.hot, hot);
+                let saved = load_account(paths, &source.id).unwrap();
+                assert_eq!(cred_plain(&saved.credentials, "zcodejwttoken", &paths.home).as_deref(), Some(token));
+                assert_eq!(zcrypto::account_identity(&read_live(paths).unwrap().unwrap(), &paths.home).user_id.as_deref(), Some("target"));
+            }
+        }
+    }
 }
