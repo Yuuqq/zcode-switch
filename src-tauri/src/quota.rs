@@ -378,10 +378,11 @@ pub fn candidate_tokens(creds: &Value, config: Option<&Value>, secret: &str, new
 
 fn http_get_json(url: &str, token: &str, retry_429: bool) -> Result<Value, String> {
     let retry_delays = [500u64, 1500, 4000];
-    let agent = ureq::AgentBuilder::new()
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    let agent = AGENT.get_or_init(|| ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout(Duration::from_secs(20))
-        .build();
+        .build());
     let headers = if url.contains("zcode.z.ai") {
         zai_billing_headers(token)
     } else {
@@ -434,7 +435,7 @@ fn http_get_json(url: &str, token: &str, retry_429: bool) -> Result<Value, Strin
     }
 }
 
-type FetchFn<'a> = dyn Fn(&str, &str) -> Result<Value, String> + 'a;
+type FetchFn<'a> = dyn Fn(&str, &str) -> Result<Value, String> + Sync + 'a;
 
 fn query_with_token_via(token: &str, fetch: &FetchFn) -> Result<QuotaOverview, String> {
     let mut best_err: Option<String>;
@@ -666,6 +667,39 @@ fn no_plan_overview() -> QuotaOverview {
 }
 
 fn query_channels_via(channels: &[Channel], fetch: &FetchFn) -> Result<QuotaOverview, String> {
+    const CONCURRENCY: usize = 3;
+    if channels.len() <= 1 {
+        return query_channels_serial_via(channels, fetch);
+    }
+    let mut parts = vec![];
+    let mut best_err = None;
+    let mut saw_no_plan = false;
+    for batch in channels.chunks(CONCURRENCY) {
+        let results = std::thread::scope(|scope| {
+            let workers: Vec<_> = batch.iter().map(|channel| {
+                scope.spawn(move || query_channels_serial_via(std::slice::from_ref(channel), fetch))
+            }).collect();
+            workers.into_iter().map(|worker| {
+                worker.join().unwrap_or_else(|e| std::panic::resume_unwind(e))
+            }).collect::<Vec<_>>()
+        });
+        for result in results {
+            match result {
+                Ok(overview) if overview.source == "no_plan" => saw_no_plan = true,
+                Ok(overview) => parts.push(overview),
+                Err(e) if best_err.is_none() => best_err = Some(e),
+                Err(_) => {}
+            }
+        }
+    }
+    if parts.is_empty() {
+        if saw_no_plan { return Ok(no_plan_overview()); }
+        return Err(best_err.unwrap_or_else(|| crate::i18n::tr("err.quota.fail")));
+    }
+    Ok(merge_parts(parts))
+}
+
+fn query_channels_serial_via(channels: &[Channel], fetch: &FetchFn) -> Result<QuotaOverview, String> {
     let mut best_err: Option<String> = None;
     let mut saw_no_plan = false;
     let mut parts: Vec<QuotaOverview> = vec![];
@@ -797,8 +831,16 @@ fn merge_parts(parts: Vec<QuotaOverview>) -> QuotaOverview {
 }
 
 fn query_channels(channels: &[Channel]) -> Result<QuotaOverview, String> {
-    query_channels_via(channels, &|url, tok| http_get_json(url, tok, true))
+    query_channels_at(channels, &str::to_string)
 }
+
+fn query_channels_at(channels: &[Channel], endpoint: &(impl Fn(&str) -> String + Sync)) -> Result<QuotaOverview, String> {
+    query_channels_via(channels, &|url, tok| http_get_json(&endpoint(url), tok, true))
+}
+
+#[cfg(test)]
+#[path = "quota_tests.rs"]
+mod tests;
 
 pub fn quota_for_live(home: &Path, creds: &Value, config: Option<&Value>) -> Result<QuotaOverview, String> {
     let secret = zcrypto::default_secret(home);
