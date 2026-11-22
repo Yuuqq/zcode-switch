@@ -6,11 +6,17 @@ import { init, t, has, lang, localeTag, stripErr, errCode } from "./i18n.js";
 import { filterAccounts, bindAccountSearch } from "./account-search.js";
 import { pickClaimPlan } from "./claim-plan-picker.js";
 import { openBrowserLogin, closeBrowserLogin } from "./browser-login.js";
+import { createSwitchProbeTracker } from "./switch-probe.js";
 
 const $app = document.getElementById("app");
 let state = null;
 let renaming = null;
 let busy = false;
+const switchProbes = createSwitchProbeTracker((outcome, name) => {
+  toast(t("m.toastSwitched", { name }), "warn", t(outcome.kind === "no_entitlement" ? "m.bitProbeNoPlan" : "m.bitProbeAuthFailed"));
+});
+const switchProbeReady = listen("switch-probe", ({ payload }) => switchProbes.receive(payload));
+switchProbeReady.catch(() => {});
 let appVer = "";
 let accountSearch = "";
 let searchComposing = false;
@@ -269,8 +275,16 @@ const actions = {
 
   async doSwitch(id, force) {
     await guard(async () => {
+      switchProbes.begin();
       const restart = state.launch_after_switch;
-      const r = await invoke("switch_to", { id, force, restart });
+      let r;
+      try {
+        await switchProbeReady;
+        r = await invoke("switch_to", { id, force, restart });
+      } catch (e) {
+        switchProbes.cancel();
+        throw e;
+      }
       if (r.already_active) {
         toast(t("m.toastAlready", { name: r.name }), "ok");
       } else {
@@ -280,14 +294,11 @@ const actions = {
         if (r.preserved_as) bits.push(t("m.bitPreserved", { name: r.preserved_as }));
         if (r.launched) bits.push(t("m.bitLaunched"));
         if (r.config_stale) bits.push(t("m.bitConfigStale"));
-        const probeBad = r.probe && r.probe.kind !== "entitled";
-        if (probeBad) {
-          bits.push(t(r.probe.kind === "no_entitlement" ? "m.bitProbeNoPlan" : "m.bitProbeAuthFailed"));
-        }
-        toast(t("m.toastSwitched", { name: r.name }), (r.config_stale || probeBad) ? "warn" : "ok", bits.join(t("common.listSep")));
+        toast(t("m.toastSwitched", { name: r.name }), r.config_stale ? "warn" : "ok", bits.join(t("common.listSep")));
       }
-      await refresh(); render();
+      switchProbes.complete(r);
       pokeAccount(id);
+      await refresh(); render();
     });
   },
 

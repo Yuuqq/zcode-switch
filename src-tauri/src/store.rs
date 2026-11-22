@@ -213,6 +213,8 @@ pub struct SwitchResult {
     pub config_stale: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub probe: Option<crate::probe::ProbeOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug, Default)]
@@ -852,18 +854,33 @@ fn rematerialize_wiped_builtins(paths: &Paths, target: &Account) {
     }
 }
 
-fn run_switch_probe(paths: &Paths, target: &Account, mid: Option<String>) -> Option<crate::probe::ProbeOutcome> {
+pub(crate) struct SwitchProbeContext {
+    credentials: Value,
+    config: Option<Value>,
+    secret: String,
+    mid: Option<String>,
+    new_gen: bool,
+}
+
+impl SwitchProbeContext {
+    pub(crate) fn run(self) -> Option<crate::probe::ProbeOutcome> {
+        crate::probe::switch_probe(
+            &self.credentials, self.config.as_ref(), &self.secret, self.mid, self.new_gen,
+        )
+    }
+}
+
+fn capture_switch_probe(paths: &Paths, target: &Account, mid: Option<String>) -> Option<SwitchProbeContext> {
     if in_sandbox() || !is_logged_in(&target.credentials) {
         return None;
     }
-    let cfg = probe_config_base(paths, target);
-    crate::probe::switch_probe(
-        &target.credentials,
-        cfg.as_ref(),
-        &zcrypto::default_secret(&paths.home),
+    Some(SwitchProbeContext {
+        credentials: target.credentials.clone(),
+        config: probe_config_base(paths, target),
+        secret: zcrypto::default_secret(&paths.home),
         mid,
-        new_gen_provider_config(&paths.data_root),
-    )
+        new_gen: new_gen_provider_config(&paths.data_root),
+    })
 }
 
 fn probe_config_base(paths: &Paths, target: &Account) -> Option<Value> {
@@ -873,6 +890,12 @@ fn probe_config_base(paths: &Paths, target: &Account) -> Option<Value> {
 }
 
 pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool) -> Result<SwitchResult, String> {
+    let (mut result, context) = switch_mutation(paths, id, force, restart, hot)?;
+    result.probe = context.and_then(SwitchProbeContext::run);
+    Ok(result)
+}
+
+pub(crate) fn switch_mutation(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool) -> Result<(SwitchResult, Option<SwitchProbeContext>), String> {
     let target = load_account(paths, id)?;
     let accounts = list_accounts(paths)?;
     let live = read_live(paths)?;
@@ -900,7 +923,7 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
         if !zcode_running() {
             let _ = write_live_arms_uid(paths, &uid);
         }
-        return Ok(SwitchResult {
+        return Ok((SwitchResult {
             switched: false,
             already_active: true,
             name: target.name,
@@ -910,7 +933,8 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
             hot: false,
             config_stale: false,
             probe: None,
-        });
+            operation_id: None,
+        }, None));
     }
 
     let running = zcode_running();
@@ -927,8 +951,8 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
         let mid = ensure_virtual_device_mid_locked(paths, &target.id)?;
         write_live_device_mid(paths, &mid)?;
         ensure_virtual_arms_uid_locked(paths, &target.id)?;
-        let probe = run_switch_probe(paths, &target, Some(mid));
-        return Ok(SwitchResult {
+        let context = capture_switch_probe(paths, &target, Some(mid));
+        return Ok((SwitchResult {
             switched: true,
             already_active: false,
             name: target.name,
@@ -937,8 +961,9 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
             launched: false,
             hot: true,
             config_stale: target.config.is_none() && paths.live_config().exists(),
-            probe,
-        });
+            probe: None,
+            operation_id: None,
+        }, context));
     }
 
     let mut killed = false;
@@ -987,9 +1012,9 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
         }
     }
 
-    let probe = run_switch_probe(paths, &target, Some(mid));
+    let context = capture_switch_probe(paths, &target, Some(mid));
 
-    Ok(SwitchResult {
+    Ok((SwitchResult {
         switched: true,
         already_active: false,
         name: target.name,
@@ -998,8 +1023,9 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
         launched,
         hot: false,
         config_stale: target.config.is_none() && paths.live_config().exists(),
-        probe,
-    })
+        probe: None,
+        operation_id: None,
+    }, context))
 }
 
 const RELAY_PASS_KEY: &str = "web-remote-control:external-relay:pass_hash";
