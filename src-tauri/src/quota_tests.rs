@@ -68,27 +68,35 @@ impl Drop for Server {
 #[test]
 #[ignore = "fixed-latency quota HTTP benchmark"]
 fn quota_http_benchmark() {
-    let channels = vec![
+    let cases = [vec![
+        Channel::Monitor("monitor-a".into()), Channel::ZaiBilling("billing-a".into()),
+    ], vec![
+        Channel::Monitor("monitor-a".into()), Channel::Monitor("monitor-b".into()),
+        Channel::ZaiBilling("billing-a".into()),
+    ], vec![
         Channel::Monitor("monitor-a".into()), Channel::Monitor("monitor-b".into()),
         Channel::Monitor("monitor-c".into()), Channel::ZaiBilling("billing-a".into()),
         Channel::ZaiBilling("billing-b".into()),
-    ];
-    let mut samples = vec![];
-    for run in 1..=7 {
-        let server = Server::new(Duration::from_millis(200), 0);
-        let start = Instant::now();
-        let result = query_channels_at(&channels, &|url| {
-            format!("{}/{}", server.url, if url == QUOTA_LIMIT_URL { "limit" } else if url == SUBSCRIPTION_URL { "subscription" } else { "billing" })
-        }).unwrap();
-        let ms = start.elapsed().as_secs_f64() * 1000.0;
-        assert!(!result.plans.is_empty());
-        let requests = server.requests.load(Ordering::SeqCst);
-        assert_eq!(requests, 8);
-        println!("run={run} channels=5 accounts=1 latency_ms=200 wall_ms={ms:.2} requests={requests}");
-        samples.push(ms);
+    ]];
+    for channels in cases {
+        let expected_requests = channels.iter().map(|c| match c { Channel::Monitor(_) => 2, Channel::ZaiBilling(_) => 1 }).sum::<usize>();
+        let mut samples = vec![];
+        for run in 1..=7 {
+            let server = Server::new(Duration::from_millis(200), 0);
+            let start = Instant::now();
+            let result = query_channels_at(&channels, &|url| {
+                format!("{}/{}", server.url, if url == QUOTA_LIMIT_URL { "limit" } else if url == SUBSCRIPTION_URL { "subscription" } else { "billing" })
+            }).unwrap();
+            let ms = start.elapsed().as_secs_f64() * 1000.0;
+            assert!(!result.plans.is_empty());
+            let requests = server.requests.load(Ordering::SeqCst);
+            assert_eq!(requests, expected_requests);
+            println!("run={run} channels={} accounts=1 latency_ms=200 wall_ms={ms:.2} requests={requests}", channels.len());
+            samples.push(ms);
+        }
+        samples.sort_by(f64::total_cmp);
+        println!("channels={} median_ms={:.2} p95_ms={:.2} requests_per_run={expected_requests} samples=7", channels.len(), samples[3], samples[6]);
     }
-    samples.sort_by(f64::total_cmp);
-    println!("median_ms={:.2} p95_ms={:.2} requests_per_run=8 samples=7", samples[3], samples[6]);
 }
 
 #[test]
