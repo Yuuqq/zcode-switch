@@ -664,12 +664,15 @@ pub(crate) fn find_same_login(live: &Value, live_hash: &str, accounts: &[Account
             return Some(i);
         }
     }
-    let live_id = zcrypto::account_identity(live, home);
+    if !is_logged_in(live) {
+        return None;
+    }
+    let live_id = zcrypto::identity_with_secret(live, &secret);
     if !identity_has_signal(&live_id) {
         return None;
     }
     accounts.iter().position(|a| {
-        identity_matches(&live_id, &zcrypto::account_identity(&a.credentials, home))
+        identity_matches(&live_id, &zcrypto::identity_with_secret(&a.credentials, &secret))
     })
 }
 
@@ -726,15 +729,8 @@ fn sync_live_back_to_source(paths: &Paths, accounts: &[Account]) -> Result<(), S
     let Some(live) = read_live(paths)? else { return Ok(()) };
     if !is_logged_in(&live) { return Ok(()); }
     let live_hash = canonical_hash(&live);
-    let live_id = zcrypto::account_identity(&live, &paths.home);
-    let has_id = identity_has_signal(&live_id);
-    let source = accounts.iter().find(|a| a.hash == live_hash).cloned().or_else(|| {
-        if !has_id { return None; }
-        accounts.iter().find(|a| {
-            identity_matches(&live_id, &zcrypto::account_identity(&a.credentials, &paths.home))
-        }).cloned()
-    });
-    let Some(mut src) = source else { return Ok(()); };
+    let Some(i) = find_same_login(&live, &live_hash, accounts, &paths.home) else { return Ok(()); };
+    let mut src = accounts[i].clone();
     let mut changed = false;
     if src.credentials != live {
         src.credentials = live.clone();
@@ -878,16 +874,9 @@ pub fn switch_to(paths: &Paths, id: &str, force: bool, restart: bool, hot: bool)
     let live = read_live(paths)?;
     let live_hash = live.as_ref().map(canonical_hash);
 
-    let already = live_hash.as_deref() == Some(target.hash.as_str())
-        || live.as_ref().is_some_and(|v| {
-            is_logged_in(v) && {
-                let (li, ti) = (
-                    zcrypto::account_identity(v, &paths.home),
-                    zcrypto::account_identity(&target.credentials, &paths.home),
-                );
-                identity_has_signal(&li) && identity_has_signal(&ti) && identity_matches(&li, &ti)
-            }
-        });
+    let already = live.as_ref().zip(live_hash.as_deref()).is_some_and(|(live, hash)| {
+        find_same_login(live, hash, std::slice::from_ref(&target), &paths.home).is_some()
+    });
     if already {
         if live_hash.as_deref() != Some(target.hash.as_str()) {
             if let Err(e) = sync_live_back_to_source(paths, &accounts) {

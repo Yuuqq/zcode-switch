@@ -90,6 +90,33 @@ fn active_login_detection_matches_duplicate_detection_after_capture() {
 }
 
 #[test]
+fn refreshed_login_stays_active_until_logout() {
+    let fixture = Fixture::new();
+    let paths = fixture.paths();
+    let mut live = credentials();
+    write_live(&paths, &live).unwrap();
+    let captured = store::capture_current(&paths, Some("Captured login".into())).unwrap();
+
+    live["oauth:bigmodel:access_token"] = json!("refreshed-access-token-longer-than-twenty-characters");
+    let saved = load_account(&paths, &captured.id).unwrap();
+    let secret = zcrypto::default_secret(&paths.home);
+    assert_ne!(zcrypto::decrypt_value(&saved.credentials, &secret).unwrap(), live);
+    write_live(&paths, &live).unwrap();
+
+    let state = store::get_state(&paths).unwrap();
+    assert!(state.live_logged_in);
+    assert_eq!(state.active_account_id.as_deref(), Some(captured.id.as_str()));
+    assert!(state.accounts[0].is_active);
+    live.as_object_mut().unwrap().remove("zcodejwttoken");
+    live.as_object_mut().unwrap().remove("oauth:bigmodel:access_token");
+    write_live(&paths, &live).unwrap();
+    let state = store::get_state(&paths).unwrap();
+    assert!(!state.live_logged_in);
+    assert!(state.active_account_id.is_none());
+    assert!(!state.accounts[0].is_active);
+}
+
+#[test]
 fn windows_browser_opener_passes_oauth_query_as_one_argument_without_a_shell() {
     for url in [
         "https://zcode.z.ai/authorize?provider=zai&state=secret-state&redirect_uri=zcode%3A%2F%2Foauth%2Fcallback",
