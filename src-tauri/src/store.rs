@@ -187,6 +187,7 @@ pub struct AppState {
     pub active_account_id: Option<String>,
     pub live_identity: Option<zcrypto::Identity>,
     pub accounts: Vec<AccountSummary>,
+    pub broken_accounts: Vec<BrokenAccount>,
     pub zcode_path: String,
     pub zcode_path_ok: bool,
     pub store_dir: String,
@@ -545,26 +546,47 @@ fn effective_zcode_path_in(paths: &Paths, candidates: &[String]) -> (String, boo
 }
 
 pub fn list_accounts(paths: &Paths) -> Result<Vec<Account>, String> {
+    let (accounts, broken) = scan_accounts(paths)?;
+    if !broken.is_empty() {
+        return Err(broken.iter().map(|b| format!("{}: {}", b.file, b.error)).collect::<Vec<_>>().join("\n"));
+    }
+    Ok(accounts)
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct BrokenAccount {
+    pub file: String,
+    pub error: String,
+}
+
+pub fn scan_accounts(paths: &Paths) -> Result<(Vec<Account>, Vec<BrokenAccount>), String> {
     let dir = paths.accounts_dir();
     if !dir.exists() {
-        return Ok(vec![]);
+        return Ok((vec![], vec![]));
     }
     let mut out = vec![];
+    let mut broken = vec![];
     for entry in fs::read_dir(&dir).map_err(|e| trf("err.store.list_fail", &[("e", &e.to_string())]))? {
         let entry = entry.map_err(|e| trf("err.store.list_fail", &[("e", &e.to_string())]))?;
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        if let Ok(raw) = fs::read_to_string(&path) {
-            if let Ok(mut a) = serde_json::from_str::<Account>(&raw) {
+        match fs::read_to_string(&path).map_err(|e| e.to_string())
+            .and_then(|raw| serde_json::from_str::<Account>(&raw).map_err(|e| e.to_string())) {
+            Ok(mut a) => {
                 migrate_account_hash_inplace(&mut a);
                 out.push(a);
             }
+            Err(error) => broken.push(BrokenAccount {
+                file: path.to_string_lossy().into_owned(),
+                error,
+            }),
         }
     }
     out.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.name.cmp(&b.name)));
-    Ok(out)
+    broken.sort_by(|a, b| a.file.cmp(&b.file));
+    Ok((out, broken))
 }
 
 pub fn save_account(paths: &Paths, acc: &Account) -> Result<(), String> {
@@ -1436,7 +1458,7 @@ fn adopt_virtual_arms_uid(paths: &Paths, acc: &mut Account) -> Result<(), String
 pub use crate::transfer::{export_all_to_file, export_bundle_value, import_values};
 
 pub fn get_state(paths: &Paths) -> Result<AppState, String> {
-    let accounts = list_accounts(paths)?;
+    let (accounts, broken_accounts) = scan_accounts(paths)?;
     let live = read_live(paths)?;
     let live_hash = live.as_ref().map(canonical_hash);
     let live_logged_in = live.as_ref().map(is_logged_in).unwrap_or(false);
@@ -1471,6 +1493,7 @@ pub fn get_state(paths: &Paths) -> Result<AppState, String> {
         active_account_id,
         live_identity,
         accounts: summaries,
+        broken_accounts,
         zcode_path,
         zcode_path_ok,
         store_dir: paths.store_dir().to_string_lossy().to_string(),

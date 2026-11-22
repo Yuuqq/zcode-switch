@@ -73,9 +73,10 @@ pub fn run(args: &[String]) -> (String, i32) {
             Err(e) => return (err(&e), 1),
         },
         "list" => {
-            let accounts = list_accounts(&paths);
+            let accounts = scan_accounts(&paths);
             match accounts {
-                Ok(a) => ok(json!({
+                Ok((a, broken)) => ok(json!({
+                    "broken_accounts": broken,
                     "accounts": a.iter().map(|x| json!({
                         "id": x.id, "name": x.name, "created_at": x.created_at,
                         "updated_at": x.updated_at, "hash": x.hash,
