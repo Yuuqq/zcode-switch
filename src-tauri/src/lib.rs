@@ -15,6 +15,8 @@ mod transfer;
 mod zcrypto;
 #[cfg(test)]
 mod login_tests;
+#[cfg(test)]
+mod switch_probe_tests;
 
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -234,13 +236,31 @@ async fn update_account_from_live(app: AppHandle, id: String) -> Result<Account,
     }).await
 }
 
+#[derive(Clone, serde::Serialize)]
+struct SwitchProbeEvent {
+    operation_id: String,
+    outcome: Option<probe::ProbeOutcome>,
+}
+
+fn switch_account(
+    paths: &Paths, id: &str, force: bool, restart: bool,
+    on_probe: impl FnOnce(SwitchProbeEvent) + Send + 'static,
+) -> Result<SwitchResult, String> {
+    let _guard = store_guard();
+    let hot = load_settings(paths).hot_switch();
+    let result = store::switch_to(paths, id, force, restart, hot)?;
+    on_probe(SwitchProbeEvent {
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        outcome: result.probe.clone(),
+    });
+    Ok(result)
+}
+
 #[tauri::command]
 async fn switch_to(app: AppHandle, id: String, force: bool, restart: bool) -> Result<SwitchResult, String> {
     blocking(move || {
-        let _guard = store_guard();
         let paths = Paths::detect();
-        let hot = load_settings(&paths).hot_switch();
-        let r = store::switch_to(&paths, &id, force, restart, hot);
+        let r = switch_account(&paths, &id, force, restart, |_| {});
         rebuild_tray(&app);
         r
     }).await

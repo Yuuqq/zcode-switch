@@ -233,7 +233,13 @@ fn real_fetch(url: &str, token: &str, mid: Option<&str>) -> Result<Value, ProbeE
         .timeout_connect(Duration::from_secs(5))
         .timeout(Duration::from_secs(8))
         .build();
-    let mut req = agent.get(url);
+    #[cfg(test)]
+    let endpoint = test_http::endpoint(token);
+    #[cfg(test)]
+    let request_url = endpoint.as_deref().unwrap_or(url);
+    #[cfg(not(test))]
+    let request_url = url;
+    let mut req = agent.get(request_url);
     if url.contains("zcode.z.ai") {
         for (k, v) in quota::zai_billing_headers_with_mid(token, mid.map(str::to_string)) {
             req = req.set(&k, &v);
@@ -252,6 +258,37 @@ fn real_fetch(url: &str, token: &str, mid: Option<&str>) -> Result<Value, ProbeE
         return Ok(Value::Null);
     }
     Ok(serde_json::from_str(&text).unwrap_or(Value::String(text.clone())))
+}
+
+#[cfg(test)]
+pub(crate) mod test_http {
+    use std::{collections::HashMap, sync::{Mutex, OnceLock}};
+
+    fn endpoints() -> &'static Mutex<HashMap<String, String>> {
+        static ENDPOINTS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+        ENDPOINTS.get_or_init(Mutex::default)
+    }
+
+    pub fn endpoint(token: &str) -> Option<String> {
+        endpoints().lock().unwrap().get(token).cloned()
+    }
+
+    pub struct Override(Vec<String>);
+
+    impl Override {
+        pub fn new(tokens: Vec<String>, url: &str) -> Self {
+            let mut endpoints = endpoints().lock().unwrap();
+            for token in &tokens { endpoints.insert(token.clone(), url.into()); }
+            Self(tokens)
+        }
+    }
+
+    impl Drop for Override {
+        fn drop(&mut self) {
+            let mut endpoints = endpoints().lock().unwrap();
+            for token in &self.0 { endpoints.remove(token); }
+        }
+    }
 }
 
 fn map_http_err(e: ureq::Error) -> ProbeErr {
