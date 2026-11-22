@@ -188,6 +188,7 @@ export const en = {
   "m.emptyBody": "Use <b>Save current login</b> below to store your first account, or <b>import</b> account files",
   "m.saveLoginDisabledTitle": "Current login is already saved as \"{name}\"",
   "m.accounts": "ACCOUNTS · Library",
+  "m.brokenAccount": "Corrupt or unreadable account file: {file}: {error}",
   "m.count": "{count} saved",
 
   "btn.saveLogin": "Save login",

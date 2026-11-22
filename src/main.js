@@ -955,6 +955,7 @@ function render() {
       ${accountSearch.trim() ? `<div class="search-scope">${t("m.searchBatchScope", { count: s.accounts.length })}</div>` : ""}
     </div>
 
+    ${(s.broken_accounts || []).map((a) => `<div class="warn-line" role="alert">${esc(t("m.brokenAccount", { file: a.file, error: a.error }))}</div>`).join("")}
     <main class="list">${listHtml}</main>
   `;
   restoreScroll(scrollCap);

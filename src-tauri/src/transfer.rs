@@ -86,6 +86,18 @@ pub fn export_bundle_value(paths: &Paths, accounts: &[Account]) -> Result<Value,
     export_with_secret(accounts, &zcrypto::default_secret(&paths.home))
 }
 
+pub fn list_accounts_for_export(paths: &Paths) -> Result<Vec<Account>, String> {
+    let (accounts, broken) = crate::store::scan_accounts(paths)?;
+    if !broken.is_empty() {
+        let files = broken.iter()
+            .map(|b| format!("{}: {}", b.file, b.error))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(trf("err.bundle.corrupt_files", &[("files", &files)]));
+    }
+    Ok(accounts)
+}
+
 fn export_with_secret(accounts: &[Account], secret: &str) -> Result<Value, String> {
     Ok(export_accounts(accounts, secret, false)?.0)
 }
@@ -160,6 +172,7 @@ pub fn export_all_to_file(
     password: &str,
     path: &Path,
 ) -> Result<ExportReport, String> {
+    list_accounts_for_export(paths)?;
     let (payload, skipped) =
         export_accounts(accounts, &zcrypto::default_secret(&paths.home), true)?;
     let count = payload["accounts"].as_array().unwrap().len();
@@ -426,6 +439,46 @@ mod tests {
 
     fn import(paths: &Paths, payload: Value, secret: &str) -> ImportReport {
         import_with_secret(paths, &[("test.zsb".into(), payload)], secret).unwrap()
+    }
+
+    #[test]
+    fn corrupt_account_is_listed_and_blocks_export() {
+        let store = TestStore::new();
+        let paths = &store.0;
+        assert!(crate::store::scan_accounts(paths).unwrap().0.is_empty());
+        assert!(crate::store::scan_accounts(paths).unwrap().1.is_empty());
+        let valid = account("Healthy", "token");
+        save_account(paths, &valid).unwrap();
+        assert_eq!(list_accounts(paths).unwrap().len(), 1);
+        let broken = paths.accounts_dir().join("broken.json");
+        fs::write(&broken, "{ invalid json").unwrap();
+        let (accounts, errors) = crate::store::scan_accounts(paths).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].file.ends_with("broken.json"));
+        assert!(!errors[0].error.is_empty());
+        let state = crate::store::get_state(paths).unwrap();
+        assert_eq!(state.accounts.len(), 1);
+        assert_eq!(state.broken_accounts.len(), 1);
+        assert_eq!(list_accounts(paths).unwrap().len(), 1);
+        assert!(export_bundle_value(paths, &accounts).is_ok());
+        let output = paths.home.join("export.zsb");
+        let error = export_all_to_file(paths, &accounts, "password", &output).unwrap_err();
+        assert!(error.contains("broken.json"));
+        assert!(error.contains(&errors[0].error));
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn unreadable_account_is_reported() {
+        let store = TestStore::new();
+        store.0.ensure_dirs().unwrap();
+        fs::create_dir(store.0.accounts_dir().join("unreadable.json")).unwrap();
+        let (accounts, errors) = crate::store::scan_accounts(&store.0).unwrap();
+        assert!(accounts.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].file.ends_with("unreadable.json"));
+        assert!(!errors[0].error.is_empty());
     }
 
     #[test]
