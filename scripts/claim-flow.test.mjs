@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import { filterAccounts } from "../src/account-search.js";
+import { createStateReader } from "../src/state-polling.js";
 
 const source = readFileSync(new URL("../src/main.js", import.meta.url), "utf8")
   .replace(/^import .*;\n/gm, "")
@@ -19,6 +20,7 @@ function harness(invoke, picker = async (plans) => plans[0]?.plan_id ?? null) {
     installDelegation: () => {},
     pickClaimPlan: picker,
     filterAccounts,
+    createStateReader,
     t: (key, params) => params ? `${key}:${JSON.stringify(params)}` : key,
     toast: (...args) => toasts.push(args),
     stripErr: (e) => String(e).replace(/^[a-z_]+:/, ""),
